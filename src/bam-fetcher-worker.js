@@ -2,7 +2,6 @@ import { group, range } from 'd3-array';
 import { scaleLinear, scaleBand } from 'd3-scale';
 import { format } from 'd3-format';
 import { expose, Transfer } from 'threads/worker';
-// import { BamFile } from 'apr144-bam';
 import { BamFile } from '@gmod/bam';
 import {
   getSubstitutions,
@@ -19,7 +18,6 @@ import {
 import LRU from 'lru-cache';
 import { PILEUP_COLOR_IXS, replaceColorIdxs, appendColorIdxs } from './bam-utils';
 import { parseChromsizesRows, ChromosomeInfo } from './chrominfo-utils';
-// import BAMDataFetcher from './bam-fetcher';
 import { clusterData, euclideanDistance, jaccardDistance, averageDistance } from 'apr144-hclust';
 import { RemoteFile } from 'generic-filehandle';
 import { phylotree } from "phylotree";
@@ -143,64 +141,6 @@ function natcmp(xRow, yRow) {
 
   return 0;
 }
-
-const groupSectionsBySortedBase = (sections, sortByBase) => {
-  // This function will take a set of sections and partition them
-  // into groups of sections and return them in some order
-
-  // We'll assume that all sections are on the same chromosome as the
-  // sortByBase position
-
-  // sectionGroups will store the groups of sections for each base
-  // type at the sort by position
-  const sectionGroups = {};
-
-  for (let section of sections) {
-    let overlapBase = null;
-
-    for (let segment of section.segments) {
-      if (
-        segment.chrName == sortByBase.chr &&
-        segment.from - segment.chrOffset <= sortByBase.pos &&
-        sortByBase.pos <= segment.to - segment.chrOffset
-      ) {
-        // The read overlaps the sortByBase position
-
-        // The following loop could be replaced by a binary search
-        // if the substitutions were sorted
-        for (let substitution of segment.substitutions) {
-          if (
-            substitution.variant &&
-            segment.from - segment.chrOffset + substitution.pos ==
-              sortByBase.pos
-          ) {
-            overlapBase = substitution.variant;
-            break;
-          }
-        }
-
-        if (sectionGroups[overlapBase]) {
-          sectionGroups[overlapBase].push(section);
-        } else {
-          sectionGroups[overlapBase] = [section];
-        }
-      }
-    }
-  }
-
-  // Sort the chunks of sections to return.
-  // The existing sorting probably isn't the one we want because
-  // sections that don't have a substitution at this location will
-  // have a "null" there
-  const sortedBases = Object.keys(sectionGroups).sort();
-
-  let toReturn = [];
-  for (let base of sortedBases) {
-    toReturn = toReturn.concat(sectionGroups[base]);
-  }
-
-  return toReturn;
-};
 
 const bamRecordToJson = (bamRecord, chrName, chrOffset, trackOptions, basicSegmentAttributesOnly) => {
   // const seq = bamRecord.get('seq'); // pre-v3 bam-js API
@@ -349,6 +289,14 @@ const bamRecordToJson = (bamRecord, chrName, chrOffset, trackOptions, basicSegme
       toClippingAdjustment = sub.length;
     }
   }
+  // segment.substitutions.forEach((sub) => {
+  //   // left soft clipped region
+  //   if ((sub.type === "S" || sub.type === "H") && sub.pos < 0) {
+  //     fromClippingAdjustment = -sub.length;
+  //   } else if ((sub.type === "S" || sub.type === "H") && sub.pos > 0) {
+  //     toClippingAdjustment = sub.length;
+  //   }
+  // });
   segment.fromWithClipping += fromClippingAdjustment;
   segment.toWithClipping += toClippingAdjustment;
 
@@ -357,101 +305,108 @@ const bamRecordToJson = (bamRecord, chrName, chrOffset, trackOptions, basicSegme
 
 // This will group the segments by readName and assign mates to reads
 const findMates = (segments) => {
-  const segmentsByReadName = groupBy(segments, 'readName');
 
-  Object.entries(segmentsByReadName).forEach(([readName, segmentGroup]) => {
-    if (segmentGroup.length === 2) {
-      const read = segmentGroup[0];
-      const mate = segmentGroup[1];
-      read.mate_ids = [mate.id];
-      mate.mate_ids = [read.id];
+  const segmentsByReadName = groupBy(segments, "readName");
 
-      read.mates = [mate];
-      mate.mates = [read];
-    } else if (segmentGroup.length > 2) {
-      // It might be useful to distinguish reads from chimeric alignments in the future,
-      // e.g., if we want to highlight read orientations of split reads. Not doing this for now.
-      // See flags here: https://broadinstitute.github.io/picard/explain-flags.html
-      // var supplementaryAlignmentMask = 1 << 11;
-      // var firstInPairMask = 1 << 6;
-      // const isFirstInPair = segment.flags & firstInPairMask;
-      // const isSupplementaryAlignment = segment.flags & supplementaryAlignmentMask;
+  Object.entries(segmentsByReadName).forEach(([readName, segmentGroup]) =>
+    {
+      if (segmentGroup.length === 2) {
+        const read = segmentGroup[0];
+        const mate = segmentGroup[1];
+        read.mate_ids = [mate.id];
+        mate.mate_ids = [read.id];
+      }
+      else if (segmentGroup.length > 2) {
+        // It might be useful to distinguish reads from chimeric alignments in the future,
+        // e.g., if we want to highlight read orientations of split reads. Not doing this for now.
+        // See flags here: https://broadinstitute.github.io/picard/explain-flags.html
+        // var supplementaryAlignmentMask = 1 << 11;
+        // var firstInPairMask = 1 << 6;
+        // const isFirstInPair = segment.flags & firstInPairMask;
+        // const isSupplementaryAlignment = segment.flags & supplementaryAlignmentMask;
 
-      // For simplicity a read will be a mate of every other read in the group.
-      // it will only be used for the mouseover and it is probably useful, if the whole group is highlighted on hover
-      segmentGroup.forEach((segment) => {
-        segment.mates = segmentGroup.filter((s) => s != segment);
-        segment.mate_ids = segment.mates.map((s) => s.id);
-      });
+        // For simplicity a read will be a mate of every other read in the group.
+        // it will only be used for the mouseover and it is probably useful, if the whole group is highlighted on hover
+        const ids = segmentGroup.map((segment) => segment.id);
+        segmentGroup.forEach((segment) => {
+          segment.mate_ids = ids;
+        });
+      }
     }
-  });
-
-  return segmentsByReadName;
-};
-
-const prepareHighlightedReads = (segmentsByReadName, trackOptions) => {
-  const outlineMateOnHover = trackOptions.outlineMateOnHover;
-  const highlightIS = trackOptions.highlightReadsBy.includes('insertSize');
-  const highlightPO = trackOptions.highlightReadsBy.includes('pairOrientation');
-  const highlightISandPO = trackOptions.highlightReadsBy.includes(
-    'insertSizeAndPairOrientation',
   );
 
+  return segmentsByReadName
+}
+
+const prepareHighlightedReads = (segments, trackOptions) => {
+
+  const outlineMateOnHover =  trackOptions.outlineMateOnHover;
+  const highlightIS = trackOptions.highlightReadsBy.includes('insertSize');
+  const highlightPO = trackOptions.highlightReadsBy.includes('pairOrientation');
+  const highlightISandPO = trackOptions.highlightReadsBy.includes('insertSizeAndPairOrientation');
+
+  let segmentsByReadName;
+
   if (highlightIS || highlightPO || highlightISandPO) {
-    // segmentsByReadName = findMates(segments);
+    segmentsByReadName = findMates(segments);
   } else if (outlineMateOnHover) {
+    findMates(segments);
     return;
   } else {
     return;
   }
 
-  Object.entries(segmentsByReadName).forEach(([readName, segmentGroup]) => {
-    // We are only highlighting insert size and pair orientation for normal (non chimeric reads)
-    if (segmentGroup.length === 2) {
-      // Changes to read or mate will change the values in the original segments array (reference)
-      const read = segmentGroup[0];
-      const mate = segmentGroup[1];
-      read.colorOverride = null;
-      mate.colorOverride = null;
-      const segmentDistance = calculateInsertSize(read, mate);
-      const hasLargeInsertSize =
-        trackOptions.largeInsertSizeThreshold &&
-        segmentDistance > trackOptions.largeInsertSizeThreshold;
-      const hasSmallInsertSize =
-        trackOptions.smallInsertSizeThreshold &&
-        segmentDistance < trackOptions.smallInsertSizeThreshold;
-      const hasLLOrientation = read.strand === '+' && mate.strand === '+';
-      const hasRROrientation = read.strand === '-' && mate.strand === '-';
-      const hasRLOrientation = read.from < mate.from && read.strand === '-';
+  Object.entries(segmentsByReadName).forEach(([readName, segmentGroup]) =>
+    {
+      // We are only highlighting insert size and pair orientation for normal (non chimeric reads)
+      if (segmentGroup.length === 2){
 
-      if (highlightIS) {
-        if (hasLargeInsertSize) {
-          read.colorOverride = PILEUP_COLOR_IXS.LARGE_INSERT_SIZE;
-        } else if (hasSmallInsertSize) {
-          read.colorOverride = PILEUP_COLOR_IXS.SMALL_INSERT_SIZE;
+        // Changes to read or mate will change the values in the original segments array (reference)
+        const read = segmentGroup[0];
+        const mate = segmentGroup[1];
+        read.colorOverride = null;
+        mate.colorOverride = null;
+        const segmentDistance = calculateInsertSize(read, mate);
+        const hasLargeInsertSize =
+          trackOptions.largeInsertSizeThreshold &&
+          segmentDistance > trackOptions.largeInsertSizeThreshold;
+        const hasSmallInsertSize =
+          trackOptions.smallInsertSizeThreshold &&
+          segmentDistance < trackOptions.smallInsertSizeThreshold;
+        const hasLLOrientation = read.strand === '+' && mate.strand === '+';
+        const hasRROrientation = read.strand === '-' && mate.strand === '-';
+        const hasRLOrientation = read.from < mate.from && read.strand === '-';
+
+        if (highlightIS) {
+          if (hasLargeInsertSize) {
+            read.colorOverride = PILEUP_COLOR_IXS.LARGE_INSERT_SIZE;
+          } else if (hasSmallInsertSize) {
+            read.colorOverride = PILEUP_COLOR_IXS.SMALL_INSERT_SIZE;
+          }
         }
-      }
 
-      if (
-        highlightPO ||
-        (highlightISandPO && (hasLargeInsertSize || hasSmallInsertSize))
-      ) {
-        if (hasLLOrientation) {
-          read.colorOverride = PILEUP_COLOR_IXS.LL;
-          read.mappingOrientation = '++';
-        } else if (hasRROrientation) {
-          read.colorOverride = PILEUP_COLOR_IXS.RR;
-          read.mappingOrientation = '--';
-        } else if (hasRLOrientation) {
-          read.colorOverride = PILEUP_COLOR_IXS.RL;
-          read.mappingOrientation = '-+';
+        if (
+          highlightPO ||
+          (highlightISandPO && (hasLargeInsertSize || hasSmallInsertSize))
+        ) {
+          if (hasLLOrientation) {
+            read.colorOverride = PILEUP_COLOR_IXS.LL;
+            read.mappingOrientation = '++';
+          } else if (hasRROrientation) {
+            read.colorOverride = PILEUP_COLOR_IXS.RR;
+            read.mappingOrientation = '--';
+          } else if (hasRLOrientation) {
+            read.colorOverride = PILEUP_COLOR_IXS.RL;
+            read.mappingOrientation = '-+';
+          }
         }
-      }
 
-      mate.colorOverride = read.colorOverride;
-      mate.mappingOrientation = read.mappingOrientation;
+        mate.colorOverride = read.colorOverride;
+        mate.mappingOrientation = read.mappingOrientation;
+      }
     }
-  });
+  );
+
 };
 
 /** Convert mapped read information returned from a higlass
@@ -476,60 +431,29 @@ const tabularJsonToRowJson = (tabularJson) => {
     newRow.from += 1;
     newRow.to += 1;
 
-    // Convert the from and to positions to genome positions
-    newRow.from += newRow.chrOffset;
-    newRow.to += newRow.chrOffset;
-    newRow.color = PILEUP_COLOR_IXS.BG;
-    newRow.mate_ids = [];
-
-    newRow.fromWithClipping = newRow.from;
-    newRow.toWithClipping = newRow.to;
-
     if (newRow.variants) {
       // server has returned information about variants in the form
       // (queryPos, referencePos, substitution)
       // modeled on pysam's get_aligned_pairs
-      newRow.substitutions = newRow.variants.map((x) => {
-        const sub = {
-          pos: x[1],
-          variant: x[2].toUpperCase(),
-          base: x[3].toUpperCase(),
-          length: 1,
-        };
-
-        return sub;
-      });
+      newRow.substitutions = newRow.variants.map((x) => ({
+        pos: x[1] - (newRow.from - newRow.chrOffset) + 1,
+        variant: x[2].toUpperCase(),
+        length: 1,
+      }));
     }
 
     if (newRow.cigars) {
-      let fromClippingAdjustment = 0;
-      let toClippingAdjustment = 0;
-
       // server has returned cigar information
       // format: x[0] : start of region
       // x[1]: type of region (e.g. 'S', 'H', 'I', etc...)
       // x[2]: the length of the region
       for (const x of newRow.cigars) {
-        const sub = {
+        newRow.substitutions.push({
           pos: x[0] - (newRow.from - newRow.chrOffset) + 1,
           type: x[1].toUpperCase(),
           length: x[2],
-        };
-
-        newRow.substitutions.push(sub);
-
-        // left soft clipped region
-        // Make sure to change this in bamRecordToJson as well
-
-        if ((sub.type === 'S' || sub.type === 'H') && sub.pos < 0) {
-          fromClippingAdjustment = -sub.length;
-        } else if ((sub.type === 'S' || sub.type === 'H') && sub.pos > 0) {
-          toClippingAdjustment = sub.length;
-        }
+        });
       }
-
-      newRow.fromWithClipping += fromClippingAdjustment;
-      newRow.toWithClipping += toClippingAdjustment;
     }
 
     rowJson.push(newRow);
@@ -584,13 +508,13 @@ const serverInit = (uid, server, tilesetUid, authHeader) => {
 
 const DEFAULT_DATA_OPTIONS = {
   maxTileWidth: 2e5,
-};
+}
 
 const init = (uid, bamUrl, baiUrl, fastaUrl, faiUrl, chromSizesUrl, options, tOptions) => {
   if (!options) {
     dataOptions[uid] = DEFAULT_DATA_OPTIONS;
   } else {
-    dataOptions[uid] = { ...DEFAULT_DATA_OPTIONS, ...options };
+    dataOptions[uid] = {...DEFAULT_DATA_OPTIONS, ...options}
   }
 
   if (fastaUrl && faiUrl) {
@@ -692,7 +616,7 @@ const getCoverage = (uid, segmentList, samplingDistance) => {
 
   // getCoverage potentiall get calles before the chromInfos finished loading
   // Exit the function in this case
-  if (!chromInfos[chromSizesUrl]) {
+  if(!chromInfos[chromSizesUrl]){
     return {
       coverage: coverage,
       maxCoverage: maxCoverage,
@@ -705,6 +629,7 @@ const getCoverage = (uid, segmentList, samplingDistance) => {
     // Find the first position that is in the sampling set
     const firstFrom = from - (from % samplingDistance) + samplingDistance;
     for (let i = firstFrom; i < to; i = i + samplingDistance) {
+
       if (!coverage[i]) {
         coverage[i] = {
           reads: 0,
@@ -716,7 +641,7 @@ const getCoverage = (uid, segmentList, samplingDistance) => {
             T: 0,
             N: 0,
           },
-          range: '', // Will be used to show the bounds of this coverage bin when mousing over
+          range: "" // Will be used to show the bounds of this coverage bin when mousing over
         };
       }
       coverage[i].reads++;
@@ -740,15 +665,17 @@ const getCoverage = (uid, segmentList, samplingDistance) => {
   }
 
   const absToChr = chromInfos[chromSizesUrl].absToChr;
-  Object.entries(coverage).forEach(([pos, entry]) => {
-    const from = absToChr(pos);
-    let range = from[0] + ':' + format(',')(from[1]);
-    if (samplingDistance > 1) {
-      const to = absToChr(parseInt(pos, 10) + samplingDistance - 1);
-      range += '-' + format(',')(to[1]);
-    }
-    entry.range = range;
-  });
+  Object.entries(coverage).forEach(
+      ([pos, entry]) => {
+        const from = absToChr(pos);
+        let range = from[0] + ":" + format(',')(from[1]);
+        if(samplingDistance > 1){
+          const to = absToChr(parseInt(pos,10)+samplingDistance-1);
+          range += "-" + format(',')(to[1]);
+        }
+        entry.range = range;
+      }
+  );
 
   return {
     coverage: coverage,
@@ -810,9 +737,18 @@ const tile = async (uid, z, x) => {
   const fiberMaxLength = (Object.hasOwn(dataOptions[uid], fiberMaxLength)) ? dataOptions[uid].fiberMaxLength : 30000;
   const fiberStrands = (Object.hasOwn(dataOptions[uid], fiberStrands)) ? dataOptions[uid].fiberStrands : ['+', '-'];
 
+  // console.log(`maxSampleSize ${maxSampleSize}`);
+  // console.log(`dataOptions ${JSON.stringify(dataOptions)}`);
+  // console.log(`trackOptions ${JSON.stringify(trackOptions)}`);
+  // console.log(`trackOptions[${uid}].methylation ${JSON.stringify(trackOptions[uid].methylation)}`);
+  // console.log(`fiberMinLength ${fiberMinLength}`);
+  // console.log(`fiberMaxLength ${fiberMaxLength}`);
+
   const { bamUrl, fastaUrl, chromSizesUrl } = dataConfs[uid];
   const bamFile = bamFiles[bamUrl];
   const sequenceFile = (fastaUrl) ? (sequenceFiles[fastaUrl]) ? sequenceFiles[fastaUrl] : null : null;
+
+  // console.log(`sequenceFile | ${fastaUrl} | ${JSON.stringify(sequenceFile)}`);
 
   return tilesetInfo(uid).then((tsInfo) => {
     const basicSegmentAttributesOnly = false;
@@ -820,9 +756,7 @@ const tile = async (uid, z, x) => {
     const recordPromises = [];
 
     if (tileWidth > maxTileWidth) {
-      // this.errorTextText(
-      //   'Zoomed out too far for this track. Zoomin further to see reads',
-      // );
+      // this.errorTextText('Zoomed out too far for this track. Zoomin further to see reads');
       return new Promise((resolve) => resolve([]));
     }
 
@@ -852,32 +786,48 @@ const tile = async (uid, z, x) => {
         };
 
         if (maxX > chromEnd) {
+
           // the visible region extends beyond the end of this chromosome
           // fetch from the start until the end of the chromosome
           recordPromises.push(
             bamFile
+              // .getRecordsForRangeSample(
+              //   chromName,
+              //   minX - chromStart,
+              //   chromEnd - chromStart,
+              //   fetchOptions
+              // )
               .getRecordsForRange(
                 chromName,
                 minX - chromStart,
                 chromEnd - chromStart,
-                fetchOptions,
+                fetchOptions
               )
               .then((records) => {
+                // if (trackOptions[uid].methylation && trackOptions[uid].methylation.maxSegmentsPerTile) {
+                //   const mappedRecordsWithMaxSegments = records.map((rec) =>
+                //     bamRecordToJson(rec, chromName, cumPositions[i].pos, trackOptions[uid], basicSegmentAttributesOnly),
+                //   ).slice(0, trackOptions[uid].methylation.maxSegmentsPerTile);
+                //   tileValues.set(
+                //     `${uid}.${z}.${x}`,
+                //     tileValues.get(`${uid}.${z}.${x}`).concat(mappedRecordsWithMaxSegments),
+                //   );
+                // }
+                // else {
+                //   const mappedRecords = records.map((rec) =>
+                //     bamRecordToJson(rec, chromName, cumPositions[i].pos, trackOptions[uid], basicSegmentAttributesOnly),
+                //   );
+                //   tileValues.set(
+                //     `${uid}.${z}.${x}`,
+                //     tileValues.get(`${uid}.${z}.${x}`).concat(mappedRecords),
+                //   );
+                // }
+                // console.log(`records retrieved ${JSON.stringify(records.length)} | ${uid}.${z}.${x}`);
                 const mappedRecords = records.map((rec) =>
-                  bamRecordToJson(
-                    rec,
-                    chromName,
-                    cumPositions[i].pos,
-                    trackOptions[uid],
-                    basicSegmentAttributesOnly,
-                  ),
-                );
-
-                tileValues.set(
-                  `${uid}.${z}.${x}`,
-                  tileValues.get(`${uid}.${z}.${x}`).concat(mappedRecords),
+                  bamRecordToJson(rec, chromName, cumPositions[i].pos, trackOptions[uid], basicSegmentAttributesOnly),
                 );
                 if (trackOptions[uid].methylation || trackOptions[uid].fire) {
+                  // console.log(`filtering for methylation or FIRE data (A) | ${fiberMinLength} | ${fiberMaxLength} | ${fiberStrands}`);
                   const filteredByLengthRecords = mappedRecords.filter((rec) => Math.abs(rec.to - rec.from) >= fiberMinLength && Math.abs(rec.to - rec.from) <= fiberMaxLength);
                   const filteredByStrandsRecords = filteredByLengthRecords.filter((rec) => fiberStrands.includes(rec.strand));
                   const filteredRecords = filteredByStrandsRecords;
@@ -933,6 +883,12 @@ const tile = async (uid, z, x) => {
           // the end of the region is within this chromosome
           recordPromises.push(
             bamFile
+              // .getRecordsForRangeSample(
+              //   chromName,
+              //   startPos,
+              //   endPos,
+              //   fetchOptions
+              // )
               .getRecordsForRange(
                 chromName,
                 startPos,
@@ -940,33 +896,45 @@ const tile = async (uid, z, x) => {
                 fetchOptions,
               )
               .then((records) => {
+                // if (trackOptions[uid].methylation && trackOptions[uid].methylation.maxSegmentsPerTile) {
+                //   const mappedRecordsWithMaxSegments = records.map((rec) =>
+                //     bamRecordToJson(rec, chromName, cumPositions[i].pos, trackOptions[uid]),
+                //   ).slice(0, trackOptions[uid].methylation.maxSegmentsPerTile);
+                //   tileValues.set(
+                //     `${uid}.${z}.${x}`,
+                //     tileValues.get(`${uid}.${z}.${x}`).concat(mappedRecordsWithMaxSegments),
+                //   );
+                // }
+                // else {
+                //   const mappedRecords = records.map((rec) =>
+                //     bamRecordToJson(rec, chromName, cumPositions[i].pos, trackOptions[uid]),
+                //   );
+                //   tileValues.set(
+                //     `${uid}.${z}.${x}`,
+                //     tileValues.get(`${uid}.${z}.${x}`).concat(mappedRecords),
+                //   );
+                // }
+                // console.log(`records retrieved ${JSON.stringify(records.length)} | ${uid}.${z}.${x}`);
                 const mappedRecords = records.map((rec) =>
-                  bamRecordToJson(
-                    rec,
-                    chromName,
-                    cumPositions[i].pos,
-                    trackOptions[uid],
-                    basicSegmentAttributesOnly,
-                  ),
-                );
-
-                tileValues.set(
-                  `${uid}.${z}.${x}`,
-                  tileValues.get(`${uid}.${z}.${x}`).concat(mappedRecords),
+                  bamRecordToJson(rec, chromName, cumPositions[i].pos, trackOptions[uid], basicSegmentAttributesOnly),
                 );
                 if (trackOptions[uid].methylation) {
+                  // console.log(`filtering for methylation data (B) | ${fiberMinLength} | ${fiberMaxLength} | ${fiberStrands}`);
                   const filteredByLengthRecords = mappedRecords.filter((rec) => Math.abs(rec.to - rec.from) >= fiberMinLength && Math.abs(rec.to - rec.from) <= fiberMaxLength);
                   const filteredByStrandsRecords = filteredByLengthRecords.filter((rec) => fiberStrands.includes(rec.strand));
                   const filteredRecords = filteredByStrandsRecords;
+                  // console.log(`filteredRecords ${filteredRecords.length}`);
                   tileValues.set(
                     `${uid}.${z}.${x}`,
                     tileValues.get(`${uid}.${z}.${x}`).concat(filteredRecords),
                   );
                 }
                 else if (trackOptions[uid].fire) {
+                  // console.log(`filtering for FIRE data (B) | ${fiberMinLength} | ${fiberMaxLength} | ${fiberStrands}`);
                   const filteredByLengthRecords = mappedRecords.filter((rec) => Math.abs(rec.to - rec.from) >= fiberMinLength && Math.abs(rec.to - rec.from) <= fiberMaxLength);
                   const filteredByStrandsRecords = filteredByLengthRecords.filter((rec) => fiberStrands.includes(rec.strand));
                   const filteredRecords = filteredByStrandsRecords;
+                  // console.log(`filteredRecords ${filteredRecords.length}`);
                   tileValues.set(
                     `${uid}.${z}.${x}`,
                     tileValues.get(`${uid}.${z}.${x}`).concat(filteredRecords),
@@ -985,6 +953,7 @@ const tile = async (uid, z, x) => {
           if (sequenceFile) {
             // handle sequence data, if available
             recordPromises.push(
+              // console.log(`A2 | pushing sequenceFile lookup into sequenceTileValues | ${chromName}:${startPos}-${endPos}`);
               sequenceFile
                 .getSequence(
                   chromName,
@@ -992,6 +961,7 @@ const tile = async (uid, z, x) => {
                   endPos,
                 )
                 .then((sequence) => {
+                  // console.log(`A2 | sequence | ${uid}.${z}.${x} | ${startPos} | ${endPos} | ${sequence}`);
                   const sequenceRecord = {
                     id: `${chromName}:${startPos}-${endPos}`,
                     chrom: chromName,
@@ -1035,28 +1005,15 @@ const serverFetchTilesDebounced = async (uid, tileIds) => {
   // first let's check if we have a larger tile that contains this one
   for (const tileId of tileIds) {
     let [zoomLevel, tileX] = tileId.split('.');
-    let tilesetInfo = tilesetInfos[uid];
+    const tilesetInfo = tilesetInfos[uid];
     let found = false;
-
-    if (!tilesetInfo) {
-      // This can happen when track options change and a new BAMDataFetcher is created.
-      // We don't have a tileset info but we're fetching a track.
-      tilesetInfo = await serverTilesetInfo(uid);
-    }
 
     const [xStart, xEnd] = tilesetInfoToStartEnd(tilesetInfo, zoomLevel, tileX);
 
     while (zoomLevel > 0) {
-      // Here we're checking if we've already fetched a larger tile.
-      // Because larger tiles are superset of the smaller tiles (in the case of pileups)
-      // if we have the larger tile, we don't need to refetch the smaller tile
       const hereTileId = `${uid}.${zoomLevel}.${tileX}`;
 
       if (tileValues.has(hereTileId)) {
-        // We do have the larger tile.
-        // Let's downsample the reads that would be present in the smaller tile
-        // and squirrel those away until the end of the function when we'll return
-        // them to the requester
         existingTiles[tileId] = tileValues
           .get(hereTileId)
           .filter((x) => xStart < x.to && xEnd > x.from);
@@ -1078,48 +1035,33 @@ const serverFetchTilesDebounced = async (uid, tileIds) => {
   const serverTileIds = toFetchIds.map(
     (x) => `d=${serverInfo.tilesetUid}.${x}`,
   );
+  const url = `${serverInfos[uid].server}/tiles/?${serverTileIds.join('&')}`;
 
-  const urls = serverTileIds.map(
-    (tileId) => `${serverInfos[uid].server}/tiles/?${tileId}`,
-  );
+  return authFetch(url, uid)
+    .then((d) => d.json())
+    .then((rt) => {
+      const newTiles = {};
 
-  const promises = urls.map((url) => {
-    return authFetch(url, uid)
-      .then((d) => d.json())
-      .then((rt) => {
-        const newTiles = {};
+      for (const tileId of tileIds) {
+        const hereTileId = `${uid}.${tileId}`;
+        const fullTileId = `${serverInfo.tilesetUid}.${tileId}`;
+        if (rt[fullTileId]) {
+          let rowJsonTile = rt[fullTileId];
 
-        for (const tileId of tileIds) {
-          const hereTileId = `${uid}.${tileId}`;
-          const fullTileId = `${serverInfo.tilesetUid}.${tileId}`;
-          if (rt[fullTileId]) {
-            let rowJsonTile = rt[fullTileId];
-
-            if (!rt[fullTileId].error) {
-              rowJsonTile = tabularJsonToRowJson(rt[fullTileId]);
-            }
-
-            rowJsonTile.tilePositionId = tileId;
-            newTiles[tileId] = rowJsonTile;
-
-            tileValues.set(hereTileId, rowJsonTile);
+          if (!rt[fullTileId].error) {
+            rowJsonTile = tabularJsonToRowJson(rt[fullTileId]);
           }
+
+          rowJsonTile.tilePositionId = tileId;
+          newTiles[tileId] = rowJsonTile;
+
+          tileValues.set(hereTileId, rowJsonTile);
         }
+      }
 
-        const toRet = { ...newTiles };
-        return toRet;
-      });
-  });
-
-  return Promise.all(promises).then((values) => {
-    let toRet = { ...existingTiles };
-
-    for (let value of values) {
-      toRet = { ...toRet, ...value };
-    }
-
-    return toRet;
-  });
+      const toRet = { ...existingTiles, ...newTiles };
+      return toRet;
+    });
 };
 
 const fetchTilesDebounced = async (uid, tileIds) => {
@@ -1160,42 +1102,29 @@ const fetchTilesDebounced = async (uid, tileIds) => {
 ///////////////////////////////////////////////////
 
 // See segmentsToRows concerning the role of occupiedSpaceInRows
-function assignSectionToRow(
-  section,
-  occupiedSpaceInRows,
-  padding,
-  trackOptions,
-) {
-  const viewAsPairs = trackOptions.viewAsPairs;
-  let segmentFromWithPadding = section.fromWithClipping - padding;
-  let segmentToWithPadding = section.toWithClipping + padding;
+function assignSegmentToRow(segment, occupiedSpaceInRows, padding) {
+
+  const segmentFromWithPadding = segment.fromWithClipping - padding;
+  const segmentToWithPadding = segment.toWithClipping + padding;
 
   // no row has been assigned - find a suitable row and update the occupied space
-  if (section.row === null || section.row === undefined) {
+  if (segment.row === null || segment.row === undefined) {
     // Go through each row and look if there is space for the segment
     for (let i = 0; i < occupiedSpaceInRows.length; i++) {
       if (!occupiedSpaceInRows[i]) {
-        // This row has free space
-        occupiedSpaceInRows[i] = {
-          from: segmentFromWithPadding,
-          to: segmentToWithPadding,
-        };
-        section.row = i;
         return;
       }
       const rowSpaceFrom = occupiedSpaceInRows[i].from;
       const rowSpaceTo = occupiedSpaceInRows[i].to;
       if (segmentToWithPadding < rowSpaceFrom) {
-        section.row = i;
-
+        segment.row = i;
         occupiedSpaceInRows[i] = {
           from: segmentFromWithPadding,
           to: rowSpaceTo,
         };
         return;
       } else if (segmentFromWithPadding > rowSpaceTo) {
-        section.row = i;
-
+        segment.row = i;
         occupiedSpaceInRows[i] = {
           from: rowSpaceFrom,
           to: segmentToWithPadding,
@@ -1204,8 +1133,8 @@ function assignSectionToRow(
       }
     }
     // There is no space in the existing rows, so add a new one.
-    section.row = occupiedSpaceInRows.length;
-
+    // console.log(`adding row to ${occupiedSpaceInRows.length} occupiedSpaceInRows rows`);
+    segment.row = occupiedSpaceInRows.length;
     occupiedSpaceInRows.push({
       from: segmentFromWithPadding,
       to: segmentToWithPadding,
@@ -1213,7 +1142,7 @@ function assignSectionToRow(
   }
   // segment already has a row - just update the occupied space
   else {
-    const assignedRow = section.row;
+    const assignedRow = segment.row;
     if (occupiedSpaceInRows[assignedRow]) {
       const rowSpaceFrom = occupiedSpaceInRows[assignedRow].from;
       const rowSpaceTo = occupiedSpaceInRows[assignedRow].to;
@@ -1349,29 +1278,6 @@ function isEmpty(obj) {
   return true;
 }
 
-// how we sort segments
-const segmentsSort = (a, b) => a.fromWithClipping - b.fromWithClipping;
-
-// A section is a group of segments that should be rendered
-// together on one row. Segments are typically reads whereas
-// Sections are read pairs.
-const createSection = (segments) => {
-  // strands always seem to be mismatched among mates
-  // let strand = segments[0].strand;
-  // for (let i = 0; i < segments.length; i++) {
-  //   if (segments[i].strand != strand) {
-  //     console.log('Mismatched strand in section', segments);
-  //   }
-  // }
-  return {
-    fromWithClipping: Math.min(...segments.map((x) => x.fromWithClipping)),
-    toWithClipping: Math.max(...segments.map((x) => x.toWithClipping)),
-    id: segments.map((x) => x.id.toString()).join('.'),
-    segments: segments.sort(segmentsSort),
-    // strand: segments[0].strand,
-  };
-};
-
 const exportSignalMatrices = (
   sessionId,
   uid,
@@ -1473,9 +1379,29 @@ const exportSignalMatrices = (
               if (segmentLength < fiberMinLength || segmentLength > fiberMaxLength) continue;
               if (fiberStrands && !fiberStrands.includes(segmentStrand)) continue;
 
+              // console.log(`segmentStart ${JSON.stringify(segmentStart)} | segmentEnd ${JSON.stringify(segmentEnd)} | segment.name ${JSON.stringify(segment.readName)}`);
               switch (eventOverlapType) {
                 case 'Full viewport':
                   if ((segmentStart < viewportChromStart) && (segmentEnd > viewportChromEnd)) {
+                    // const offsetStart = chromStart - segmentStart;
+                    // const offsetEnd = offsetStart + eventVecLen;
+                    // for (const mo of mos) {
+                    //   const offsets = mo.offsets;
+                    //   const probabilities = mo.probabilities;
+                    //   if ((eventCategories.includes('m6A+') && mo.unmodifiedBase === 'A')
+                    //     || (eventCategories.includes('m6A-') && mo.unmodifiedBase === 'T')
+                    //     || (eventCategories.includes('5mC') && mo.unmodifiedBase === 'C')) {
+                    //     for (let offsetIdx = 0; offsetIdx < offsets.length; offsetIdx++) {
+                    //       const offset = offsets[offsetIdx];
+                    //       const probability = probabilities[offsetIdx];
+                    //       if ((offset >= offsetStart) && (offset <= offsetEnd) && (probabilityThresholdRange.min <= probability && probabilityThresholdRange.max >= probability)) {
+                    //         eventVec[offset - offsetStart] = parseInt(probability);
+                    //       }
+                    //     }
+                    //   }
+                    // }
+                    // trueRow[allowedRowIdx] = i;
+                    // clusterMatrix[allowedRowIdx] = eventVec;
                     identifiersArray.push(segment.readName);
 
                     // ** viewport event matrix **
@@ -1527,6 +1453,25 @@ const exportSignalMatrices = (
 
                 case 'Full subregion':
                   if ((segmentStart < chromStart) && (segmentEnd > chromEnd)) {
+                    // const offsetStart = chromStart - segmentStart;
+                    // const offsetEnd = offsetStart + eventVecLen;
+                    // for (const mo of mos) {
+                    //   const offsets = mo.offsets;
+                    //   const probabilities = mo.probabilities;
+                    //   if ((eventCategories.includes('m6A+') && mo.unmodifiedBase === 'A')
+                    //     || (eventCategories.includes('m6A-') && mo.unmodifiedBase === 'T')
+                    //     || (eventCategories.includes('5mC') && mo.unmodifiedBase === 'C')) {
+                    //     for (let offsetIdx = 0; offsetIdx < offsets.length; offsetIdx++) {
+                    //       const offset = offsets[offsetIdx];
+                    //       const probability = probabilities[offsetIdx];
+                    //       if ((offset >= offsetStart) && (offset <= offsetEnd) && (probabilityThresholdRange.min <= probability && probabilityThresholdRange.max >= probability)) {
+                    //         eventVec[offset - offsetStart] = parseInt(probability);
+                    //       }
+                    //     }
+                    //   }
+                    // }
+                    // trueRow[allowedRowIdx] = i;
+                    // clusterMatrix[allowedRowIdx] = eventVec;
                     identifiersArray.push(segment.readName);
 
                     // ** viewport event matrix **
@@ -1595,6 +1540,25 @@ const exportSignalMatrices = (
 
                 case 'Partial subregion':
                   if ((segmentStart < chromStart) && (segmentEnd > chromEnd)) {
+                    // const offsetStart = chromStart - segmentStart;
+                    // const offsetEnd = offsetStart + eventVecLen;
+                    // for (const mo of mos) {
+                    //   const offsets = mo.offsets;
+                    //   const probabilities = mo.probabilities;
+                    //   if ((eventCategories.includes('m6A+') && mo.unmodifiedBase === 'A')
+                    //     || (eventCategories.includes('m6A-') && mo.unmodifiedBase === 'T')
+                    //     || (eventCategories.includes('5mC') && mo.unmodifiedBase === 'C')) {
+                    //     for (let offsetIdx = 0; offsetIdx < offsets.length; offsetIdx++) {
+                    //       const offset = offsets[offsetIdx];
+                    //       const probability = probabilities[offsetIdx];
+                    //       if ((offset >= offsetStart) && (offset <= offsetEnd) && (probabilityThresholdRange.min <= probability && probabilityThresholdRange.max >= probability)) {
+                    //         eventVec[offset - offsetStart] = parseInt(probability);
+                    //       }
+                    //     }
+                    //   }
+                    // }
+                    // trueRow[allowedRowIdx] = i;
+                    // clusterMatrix[allowedRowIdx] = eventVec;
                     identifiersArray.push(segment.readName);
 
                     // ** viewport event matrix **
@@ -1658,6 +1622,24 @@ const exportSignalMatrices = (
                     allowedRowIdx++;
                   }
                   else if ((segmentStart >= chromStart) && (segmentEnd <= chromEnd)) {
+                    // const offsetModifier = segmentStart - chromStart;
+                    // for (const mo of mos) {
+                    //   const offsets = mo.offsets;
+                    //   const probabilities = mo.probabilities;
+                    //   if ((eventCategories.includes('m6A+') && mo.unmodifiedBase === 'A')
+                    //     || (eventCategories.includes('m6A-') && mo.unmodifiedBase === 'T')
+                    //     || (eventCategories.includes('5mC') && mo.unmodifiedBase === 'C')) {
+                    //     for (let offsetIdx = 0; offsetIdx < offsets.length; offsetIdx++) {
+                    //       const offset = offsets[offsetIdx];
+                    //       const probability = parseInt(probabilities[offsetIdx]);
+                    //       if ((offsetModifier + offset < eventVecLen) && (probabilityThresholdRange.min <= probability && probabilityThresholdRange.max >= probability)) {
+                    //         eventVec[offsetModifier + offset] = probability;
+                    //       }
+                    //     }
+                    //   }
+                    // }
+                    // trueRow[allowedRowIdx] = i;
+                    // clusterMatrix[allowedRowIdx] = eventVec;
                     identifiersArray.push(segment.readName);
 
                     // ** viewport event matrix **
@@ -1721,6 +1703,25 @@ const exportSignalMatrices = (
                     allowedRowIdx++;
                   }
                   else if ((segmentStart < chromStart) && (segmentEnd <= chromEnd) && (segmentEnd > chromStart)) {
+                    // const offsetStart = chromStart - segmentStart;
+                    // const offsetEnd = segmentEnd - segmentStart;
+                    // for (const mo of mos) {
+                    //   const offsets = mo.offsets;
+                    //   const probabilities = mo.probabilities;
+                    //   if ((eventCategories.includes('m6A+') && mo.unmodifiedBase === 'A')
+                    //     || (eventCategories.includes('m6A-') && mo.unmodifiedBase === 'T')
+                    //     || (eventCategories.includes('5mC') && mo.unmodifiedBase === 'C')) {
+                    //     for (let offsetIdx = 0; offsetIdx < offsets.length; offsetIdx++) {
+                    //       const offset = offsets[offsetIdx];
+                    //       const probability = parseInt(probabilities[offsetIdx]);
+                    //       if ((offset >= offsetStart) && (offset <= offsetEnd) && (probabilityThresholdRange.min <= probability && probabilityThresholdRange.max >= probability)) {
+                    //         eventVec[offset - offsetStart] = probability;
+                    //       }
+                    //     }
+                    //   }
+                    // }
+                    // trueRow[allowedRowIdx] = i;
+                    // clusterMatrix[allowedRowIdx] = eventVec;
                     identifiersArray.push(segment.readName);
 
                     // ** viewport event matrix **
@@ -1784,6 +1785,25 @@ const exportSignalMatrices = (
                     allowedRowIdx++;
                   }
                   else if ((segmentStart >= chromStart) && (segmentStart < chromEnd) && (segmentEnd > chromEnd)) {
+                    // const offsetStart = segmentStart - chromStart;
+                    // const offsetEnd = chromEnd - segmentStart + offsetStart;
+                    // for (const mo of mos) {
+                    //   const offsets = mo.offsets;
+                    //   const probabilities = mo.probabilities;
+                    //   if ((eventCategories.includes('m6A+') && mo.unmodifiedBase === 'A')
+                    //     || (eventCategories.includes('m6A-') && mo.unmodifiedBase === 'T')
+                    //     || (eventCategories.includes('5mC') && mo.unmodifiedBase === 'C')) {
+                    //     for (let offsetIdx = 0; offsetIdx < offsets.length; offsetIdx++) {
+                    //       const offset = offsets[offsetIdx];
+                    //       const probability = parseInt(probabilities[offsetIdx]);
+                    //       if ((offset >= offsetStart) && (offset < offsetEnd) && (probabilityThresholdRange.min <= probability && probabilityThresholdRange.max >= probability)) {
+                    //         eventVec[offset] = probability;
+                    //       }
+                    //     }
+                    //   }
+                    // }
+                    // trueRow[allowedRowIdx] = i;
+                    // clusterMatrix[allowedRowIdx] = eventVec;
                     identifiersArray.push(segment.readName);
 
                     // ** viewport event matrix **
@@ -1869,6 +1889,25 @@ const exportSignalMatrices = (
               switch (eventOverlapType) {
                 case 'Full viewport':
                   if ((segmentStart < viewportChromStart) && (segmentEnd > viewportChromEnd)) {
+                    // const offsetStart = chromStart - segmentStart;
+                    // const offsetEnd = offsetStart + eventVecLen;
+                    // for (const mo of mos) {
+                    //   const offsets = mo.offsets;
+                    //   const probabilities = mo.probabilities;
+                    //   if ((eventCategories.includes('m6A+') && mo.unmodifiedBase === 'A')
+                    //     || (eventCategories.includes('m6A-') && mo.unmodifiedBase === 'T')
+                    //     || (eventCategories.includes('5mC') && mo.unmodifiedBase === 'C')) {
+                    //     for (let offsetIdx = 0; offsetIdx < offsets.length; offsetIdx++) {
+                    //       const offset = offsets[offsetIdx];
+                    //       const probability = probabilities[offsetIdx];
+                    //       if ((offset >= offsetStart) && (offset <= offsetEnd) && (probabilityThresholdRange.min <= probability && probabilityThresholdRange.max >= probability)) {
+                    //         eventVec[offset - offsetStart] = 1;
+                    //       }
+                    //     }
+                    //   }
+                    // }
+                    // trueRow[allowedRowIdx] = i;
+                    // clusterMatrix[allowedRowIdx] = eventVec;
                     identifiersArray.push(segment.readName);
 
                     // ** viewport event matrix **
@@ -1919,6 +1958,25 @@ const exportSignalMatrices = (
                   break;
                 case 'Full subregion':
                   if ((segmentStart < chromStart) && (segmentEnd > chromEnd)) {
+                    // const offsetStart = chromStart - segmentStart;
+                    // const offsetEnd = offsetStart + eventVecLen;
+                    // for (const mo of mos) {
+                    //   const offsets = mo.offsets;
+                    //   const probabilities = mo.probabilities;
+                    //   if ((eventCategories.includes('m6A+') && mo.unmodifiedBase === 'A')
+                    //     || (eventCategories.includes('m6A-') && mo.unmodifiedBase === 'T')
+                    //     || (eventCategories.includes('5mC') && mo.unmodifiedBase === 'C')) {
+                    //     for (let offsetIdx = 0; offsetIdx < offsets.length; offsetIdx++) {
+                    //       const offset = offsets[offsetIdx];
+                    //       const probability = probabilities[offsetIdx];
+                    //       if ((offset >= offsetStart) && (offset <= offsetEnd) && (probabilityThresholdRange.min <= probability && probabilityThresholdRange.max >= probability)) {
+                    //         eventVec[offset - offsetStart] = 1;
+                    //       }
+                    //     }
+                    //   }
+                    // }
+                    // trueRow[allowedRowIdx] = i;
+                    // clusterMatrix[allowedRowIdx] = eventVec;
                     identifiersArray.push(segment.readName);
 
                     // ** viewport event matrix **
@@ -1984,6 +2042,25 @@ const exportSignalMatrices = (
                   break;
                 case 'Partial subregion':
                   if ((segmentStart < chromStart) && (segmentEnd > chromEnd)) {
+                    // const offsetStart = chromStart - segmentStart;
+                    // const offsetEnd = offsetStart + eventVecLen;
+                    // for (const mo of mos) {
+                    //   const offsets = mo.offsets;
+                    //   const probabilities = mo.probabilities;
+                    //   if ((eventCategories.includes('m6A+') && mo.unmodifiedBase === 'A')
+                    //     || (eventCategories.includes('m6A-') && mo.unmodifiedBase === 'T')
+                    //     || (eventCategories.includes('5mC') && mo.unmodifiedBase === 'C')) {
+                    //     for (let offsetIdx = 0; offsetIdx < offsets.length; offsetIdx++) {
+                    //       const offset = offsets[offsetIdx];
+                    //       const probability = probabilities[offsetIdx];
+                    //       if ((offset >= offsetStart) && (offset <= offsetEnd) && (probabilityThresholdRange.min <= probability && probabilityThresholdRange.max >= probability)) {
+                    //         eventVec[offset - offsetStart] = 1;
+                    //       }
+                    //     }
+                    //   }
+                    // }
+                    // trueRow[allowedRowIdx] = i;
+                    // clusterMatrix[allowedRowIdx] = eventVec;
                     identifiersArray.push(segment.readName);
 
                     // ** viewport event matrix **
@@ -2047,6 +2124,24 @@ const exportSignalMatrices = (
                     allowedRowIdx++;
                   }
                   else if ((segmentStart >= chromStart) && (segmentEnd <= chromEnd)) {
+                    // const offsetModifier = segmentStart - chromStart;
+                    // for (const mo of mos) {
+                    //   const offsets = mo.offsets;
+                    //   const probabilities = mo.probabilities;
+                    //   if ((eventCategories.includes('m6A+') && mo.unmodifiedBase === 'A')
+                    //     || (eventCategories.includes('m6A-') && mo.unmodifiedBase === 'T')
+                    //     || (eventCategories.includes('5mC') && mo.unmodifiedBase === 'C')) {
+                    //     for (let offsetIdx = 0; offsetIdx < offsets.length; offsetIdx++) {
+                    //       const offset = offsets[offsetIdx];
+                    //       const probability = parseInt(probabilities[offsetIdx]);
+                    //       if ((offsetModifier + offset < eventVecLen) && (probabilityThresholdRange.min <= probability && probabilityThresholdRange.max >= probability)) {
+                    //         eventVec[offsetModifier + offset] = 1;
+                    //       }
+                    //     }
+                    //   }
+                    // }
+                    // trueRow[allowedRowIdx] = i;
+                    // clusterMatrix[allowedRowIdx] = eventVec;
                     identifiersArray.push(segment.readName);
 
                     // ** viewport event matrix **
@@ -2110,6 +2205,25 @@ const exportSignalMatrices = (
                     allowedRowIdx++;
                   }
                   else if ((segmentStart < chromStart) && (segmentEnd <= chromEnd) && (segmentEnd > chromStart)) {
+                    // const offsetStart = chromStart - segmentStart;
+                    // const offsetEnd = segmentEnd - segmentStart;
+                    // for (const mo of mos) {
+                    //   const offsets = mo.offsets;
+                    //   const probabilities = mo.probabilities;
+                    //   if ((eventCategories.includes('m6A+') && mo.unmodifiedBase === 'A')
+                    //     || (eventCategories.includes('m6A-') && mo.unmodifiedBase === 'T')
+                    //     || (eventCategories.includes('5mC') && mo.unmodifiedBase === 'C')) {
+                    //     for (let offsetIdx = 0; offsetIdx < offsets.length; offsetIdx++) {
+                    //       const offset = offsets[offsetIdx];
+                    //       const probability = parseInt(probabilities[offsetIdx]);
+                    //       if ((offset >= offsetStart) && (offset <= offsetEnd) && (probabilityThresholdRange.min <= probability && probabilityThresholdRange.max >= probability)) {
+                    //         eventVec[offset - offsetStart] = 1;
+                    //       }
+                    //     }
+                    //   }
+                    // }
+                    // trueRow[allowedRowIdx] = i;
+                    // clusterMatrix[allowedRowIdx] = eventVec;
                     identifiersArray.push(segment.readName);
 
                     // ** viewport event matrix **
@@ -2173,6 +2287,25 @@ const exportSignalMatrices = (
                     allowedRowIdx++;
                   }
                   else if ((segmentStart >= chromStart) && (segmentStart < chromEnd) && (segmentEnd > chromEnd)) {
+                    // const offsetStart = segmentStart - chromStart;
+                    // const offsetEnd = chromEnd - segmentStart + offsetStart;
+                    // for (const mo of mos) {
+                    //   const offsets = mo.offsets;
+                    //   const probabilities = mo.probabilities;
+                    //   if ((eventCategories.includes('m6A+') && mo.unmodifiedBase === 'A')
+                    //     || (eventCategories.includes('m6A-') && mo.unmodifiedBase === 'T')
+                    //     || (eventCategories.includes('5mC') && mo.unmodifiedBase === 'C')) {
+                    //     for (let offsetIdx = 0; offsetIdx < offsets.length; offsetIdx++) {
+                    //       const offset = offsets[offsetIdx];
+                    //       const probability = parseInt(probabilities[offsetIdx]);
+                    //       if ((offset >= offsetStart) && (offset < offsetEnd) && (probabilityThresholdRange.min <= probability && probabilityThresholdRange.max >= probability)) {
+                    //         eventVec[offset] = 1;
+                    //       }
+                    //     }
+                    //   }
+                    // }
+                    // trueRow[allowedRowIdx] = i;
+                    // clusterMatrix[allowedRowIdx] = eventVec;
                     identifiersArray.push(segment.readName);
 
                     // ** viewport event matrix **
@@ -2264,6 +2397,25 @@ const exportSignalMatrices = (
               switch (eventOverlapType) {
                 case 'Full viewport':
                   if ((segmentStart < viewportChromStart) && (segmentEnd > viewportChromEnd)) {
+                    // const offsetStart = chromStart - segmentStart;
+                    // const offsetEnd = offsetStart + eventVecLen;
+                    // for (const mo of mos) {
+                    //   const offsets = mo.offsets;
+                    //   const probabilities = mo.probabilities;
+                    //   if ((eventCategories.includes('m6A+') && mo.unmodifiedBase === 'A')
+                    //     || (eventCategories.includes('m6A-') && mo.unmodifiedBase === 'T')
+                    //     || (eventCategories.includes('5mC') && mo.unmodifiedBase === 'C')) {
+                    //     for (let offsetIdx = 0; offsetIdx < offsets.length; offsetIdx++) {
+                    //       const offset = offsets[offsetIdx];
+                    //       const probability = probabilities[offsetIdx];
+                    //       if ((offset >= offsetStart) && (offset <= offsetEnd) && (probabilityThresholdRange.min <= probability && probabilityThresholdRange.max >= probability)) {
+                    //         eventVec[offset - offsetStart] = parseInt(probability);
+                    //       }
+                    //     }
+                    //   }
+                    // }
+                    // trueRow[allowedRowIdx] = i;
+                    // clusterMatrix[allowedRowIdx] = eventVec;
                     identifiersArray.push(segment.readName);
 
                     // ** viewport event matrix **
@@ -2314,6 +2466,25 @@ const exportSignalMatrices = (
                   break;
                 case 'Full subregion':
                   if ((segmentStart < chromStart) && (segmentEnd > chromEnd)) {
+                    // const offsetStart = chromStart - segmentStart;
+                    // const offsetEnd = offsetStart + eventVecLen;
+                    // for (const mo of mos) {
+                    //   const offsets = mo.offsets;
+                    //   const probabilities = mo.probabilities;
+                    //   if ((eventCategories.includes('m6A+') && mo.unmodifiedBase === 'A')
+                    //     || (eventCategories.includes('m6A-') && mo.unmodifiedBase === 'T')
+                    //     || (eventCategories.includes('5mC') && mo.unmodifiedBase === 'C')) {
+                    //     for (let offsetIdx = 0; offsetIdx < offsets.length; offsetIdx++) {
+                    //       const offset = offsets[offsetIdx];
+                    //       const probability = probabilities[offsetIdx];
+                    //       if ((offset >= offsetStart) && (offset <= offsetEnd) && (probabilityThresholdRange.min <= probability && probabilityThresholdRange.max >= probability)) {
+                    //         eventVec[offset - offsetStart] = parseInt(probability);
+                    //       }
+                    //     }
+                    //   }
+                    // }
+                    // trueRow[allowedRowIdx] = i;
+                    // clusterMatrix[allowedRowIdx] = eventVec;
                     identifiersArray.push(segment.readName);
 
                     // ** viewport event matrix **
@@ -2379,6 +2550,25 @@ const exportSignalMatrices = (
                   break;
                 case 'Partial subregion':
                   if ((segmentStart < chromStart) && (segmentEnd > chromEnd)) {
+                    // const offsetStart = chromStart - segmentStart;
+                    // const offsetEnd = offsetStart + eventVecLen;
+                    // for (const mo of mos) {
+                    //   const offsets = mo.offsets;
+                    //   const probabilities = mo.probabilities;
+                    //   if ((eventCategories.includes('m6A+') && mo.unmodifiedBase === 'A')
+                    //     || (eventCategories.includes('m6A-') && mo.unmodifiedBase === 'T')
+                    //     || (eventCategories.includes('5mC') && mo.unmodifiedBase === 'C')) {
+                    //     for (let offsetIdx = 0; offsetIdx < offsets.length; offsetIdx++) {
+                    //       const offset = offsets[offsetIdx];
+                    //       const probability = probabilities[offsetIdx];
+                    //       if ((offset >= offsetStart) && (offset <= offsetEnd) && (probabilityThresholdRange.min <= probability && probabilityThresholdRange.max >= probability)) {
+                    //         eventVec[offset - offsetStart] = parseInt(probability);
+                    //       }
+                    //     }
+                    //   }
+                    // }
+                    // trueRow[allowedRowIdx] = i;
+                    // clusterMatrix[allowedRowIdx] = eventVec;
                     identifiersArray.push(segment.readName);
 
                     // ** viewport event matrix **
@@ -2442,6 +2632,24 @@ const exportSignalMatrices = (
                     allowedRowIdx++;
                   }
                   else if ((segmentStart >= chromStart) && (segmentEnd <= chromEnd)) {
+                    // const offsetModifier = segmentStart - chromStart;
+                    // for (const mo of mos) {
+                    //   const offsets = mo.offsets;
+                    //   const probabilities = mo.probabilities;
+                    //   if ((eventCategories.includes('m6A+') && mo.unmodifiedBase === 'A')
+                    //     || (eventCategories.includes('m6A-') && mo.unmodifiedBase === 'T')
+                    //     || (eventCategories.includes('5mC') && mo.unmodifiedBase === 'C')) {
+                    //     for (let offsetIdx = 0; offsetIdx < offsets.length; offsetIdx++) {
+                    //       const offset = offsets[offsetIdx];
+                    //       const probability = parseInt(probabilities[offsetIdx]);
+                    //       if ((offsetModifier + offset < eventVecLen) && (probabilityThresholdRange.min <= probability && probabilityThresholdRange.max >= probability)) {
+                    //         eventVec[offsetModifier + offset] = probability;
+                    //       }
+                    //     }
+                    //   }
+                    // }
+                    // trueRow[allowedRowIdx] = i;
+                    // clusterMatrix[allowedRowIdx] = eventVec;
                     identifiersArray.push(segment.readName);
 
                     // ** viewport event matrix **
@@ -2505,6 +2713,25 @@ const exportSignalMatrices = (
                     allowedRowIdx++;
                   }
                   else if ((segmentStart < chromStart) && (segmentEnd <= chromEnd) && (segmentEnd > chromStart)) {
+                    // const offsetStart = chromStart - segmentStart;
+                    // const offsetEnd = segmentEnd - segmentStart;
+                    // for (const mo of mos) {
+                    //   const offsets = mo.offsets;
+                    //   const probabilities = mo.probabilities;
+                    //   if ((eventCategories.includes('m6A+') && mo.unmodifiedBase === 'A')
+                    //     || (eventCategories.includes('m6A-') && mo.unmodifiedBase === 'T')
+                    //     || (eventCategories.includes('5mC') && mo.unmodifiedBase === 'C')) {
+                    //     for (let offsetIdx = 0; offsetIdx < offsets.length; offsetIdx++) {
+                    //       const offset = offsets[offsetIdx];
+                    //       const probability = parseInt(probabilities[offsetIdx]);
+                    //       if ((offset >= offsetStart) && (offset <= offsetEnd) && (probabilityThresholdRange.min <= probability && probabilityThresholdRange.max >= probability)) {
+                    //         eventVec[offset - offsetStart] = probability;
+                    //       }
+                    //     }
+                    //   }
+                    // }
+                    // trueRow[allowedRowIdx] = i;
+                    // clusterMatrix[allowedRowIdx] = eventVec;
                     identifiersArray.push(segment.readName);
 
                     // ** viewport event matrix **
@@ -2568,6 +2795,25 @@ const exportSignalMatrices = (
                     allowedRowIdx++;
                   }
                   else if ((segmentStart >= chromStart) && (segmentStart < chromEnd) && (segmentEnd > chromEnd)) {
+                    // const offsetStart = segmentStart - chromStart;
+                    // const offsetEnd = chromEnd - segmentStart + offsetStart;
+                    // for (const mo of mos) {
+                    //   const offsets = mo.offsets;
+                    //   const probabilities = mo.probabilities;
+                    //   if ((eventCategories.includes('m6A+') && mo.unmodifiedBase === 'A')
+                    //     || (eventCategories.includes('m6A-') && mo.unmodifiedBase === 'T')
+                    //     || (eventCategories.includes('5mC') && mo.unmodifiedBase === 'C')) {
+                    //     for (let offsetIdx = 0; offsetIdx < offsets.length; offsetIdx++) {
+                    //       const offset = offsets[offsetIdx];
+                    //       const probability = parseInt(probabilities[offsetIdx]);
+                    //       if ((offset >= offsetStart) && (offset < offsetEnd) && (probabilityThresholdRange.min <= probability && probabilityThresholdRange.max >= probability)) {
+                    //         eventVec[offset] = probability;
+                    //       }
+                    //     }
+                    //   }
+                    // }
+                    // trueRow[allowedRowIdx] = i;
+                    // clusterMatrix[allowedRowIdx] = eventVec;
                     identifiersArray.push(segment.readName);
 
                     // ** viewport event matrix **
@@ -2699,6 +2945,7 @@ const exportTFBSOverlaps = (
       const segment = segmentList[i];
       const segmentStart = segment.from - segment.chrOffset;
       const segmentEnd = segment.to - segment.chrOffset;
+      // console.log(`segmentStart ${segmentStart} | segmentEnd ${segmentEnd} | rangeStart ${rangeStart} | rangeEnd ${rangeEnd}`);
       if (
         ((segmentStart <= rangeStart) && (segmentStart < rangeEnd) && (segmentEnd > rangeStart))
         ||
@@ -2707,6 +2954,7 @@ const exportTFBSOverlaps = (
         ((segmentStart >= rangeStart) && (segmentStart < rangeEnd) && (segmentEnd >= rangeStart) && (segmentEnd < rangeEnd))
         )
       {
+        // console.log(`segment ${segment.readName}`);
         tfbsOverlaps.push(segment.readName);
       }
     }
@@ -2757,6 +3005,7 @@ const exportIndexDHSOverlaps = (
       const segment = segmentList[i];
       const segmentStart = segment.from - segment.chrOffset;
       const segmentEnd = segment.to - segment.chrOffset;
+      // console.log(`segmentStart ${segmentStart} | segmentEnd ${segmentEnd} | rangeStart ${rangeStart} | rangeEnd ${rangeEnd}`);
       if (
         ((segmentStart <= rangeStart) && (segmentStart < rangeEnd) && (segmentEnd > rangeStart))
         ||
@@ -2765,12 +3014,15 @@ const exportIndexDHSOverlaps = (
         ((segmentStart >= rangeStart) && (segmentStart < rangeEnd) && (segmentEnd >= rangeStart) && (segmentEnd < rangeEnd))
         )
       {
+        // console.log(`trackOptions.indexDHS ${JSON.stringify(trackOptions.indexDHS)}`);
+        // console.log(`segment.metadata ${JSON.stringify(segment.metadata)}`);
         const overlappingDHSMetadata = {
           group: trackOptions.indexDHS.group,
           id: segment.metadata.dhs.id,
           name: trackOptions.indexDHS.itemRGBMap[segment.metadata.rgb],
           rgb: segment.metadata.rgb,
         };
+        // console.log(`overlappingDHSMetadata ${JSON.stringify(overlappingDHSMetadata)}`);
         indexDHSOverlaps.push(overlappingDHSMetadata);
       }
     }
@@ -2919,27 +3171,23 @@ const exportSegmentsAsBED12 = (
   let [minPos, maxPos] = [Number.MAX_VALUE, -Number.MAX_VALUE];
 
   for (let i = 0; i < segmentList.length; i++) {
-    if (segmentList[i].in_bounds) {
-      if (segmentList[i].from < minPos) {
-        minPos = segmentList[i].from;
-      }
+    if (segmentList[i].from < minPos) {
+      minPos = segmentList[i].from;
+    }
 
-      if (segmentList[i].to > maxPos) {
-        maxPos = segmentList[i].to;
-      }
+    if (segmentList[i].to > maxPos) {
+      maxPos = segmentList[i].to;
     }
   }
   let grouped = null;
 
   // group by some attribute or don't
   if (groupBy) {
-    // we should only be able to group by things that are common across
-    // across all segments in a section.
     let groupByOption = trackOptions && trackOptions.groupBy;
     groupByOption = groupByOption ? groupByOption : null;
-    grouped = groupBy(sections, groupByOption);
+    grouped = groupBy(segmentList, groupByOption);
   } else {
-    grouped = { null: sections };
+    grouped = { null: segmentList };
   }
 
   // console.log(`bed12ExportDataObj ${JSON.stringify(bed12ExportDataObj)}`);
@@ -3653,15 +3901,21 @@ const renderSegments = (
       allSegments[segment.id] = segment;
     }
 
+    // if (trackOptions.fire) {
+    //   console.log(`${tileId} | ${JSON.stringify(Object.keys(allSegments))}`);
+    // }
+
     const sequenceTileValue = sequenceTileValues.get(`${uid}.${tileId}`);
 
     if (sequenceTileValue && trackOptions.methylation && trackOptions.methylation.highlights) {
+      // console.log(`renderSegments | ${uid} | ${JSON.stringify(tileIds)} | ${JSON.stringify(trackOptions)}`);
       const highlights = Object.keys(trackOptions.methylation.highlights);
       for (const sequence of sequenceTileValue) {
         // allSequences[parseInt(sequence.start)] = sequence.data;
         const absPosStart = parseInt(sequence.start) + parseInt(sequence.chromOffset);
         const seq = sequence.data.toUpperCase();
         for (const highlight of highlights) {
+          // console.log(`highlight ${JSON.stringify(highlight)}`);
           if (highlight !== 'M0A') {
             const highlightUC = highlight.toUpperCase();
             const highlightLength = highlight.length;
@@ -3676,19 +3930,35 @@ const renderSegments = (
             let posnA = seq.indexOf('A');
             let posnT = seq.indexOf('T');
             let posn = Math.min(posnA, posnT);
+            // console.log(`posnA ${posnA} | posnT ${posnT} | posn ${posn}`);
             if (isEmpty(highlightPositions) || !highlightPositions[highlight]) highlightPositions[highlight] = new Array();
             while (posn > -1) {
               highlightPositions[highlight].push(posn + absPosStart + 1); // 1-based indexed positions!
               posnA = seq.indexOf('A', posn + 1);
               posnT = seq.indexOf('T', posn + 1);
               posn = ((posnA !== -1) && (posnT !== -1)) ? Math.min(posnA, posnT) : (posnA === -1) ? posnT : (posnT === -1) ? posnA : -1;
+              // console.log(`posnA ${posnA} | posnT ${posnT} | posn ${posn}`);
             }
+            // console.log(`highlightPositions[${highlight}] ${highlightPositions[highlight]}`);
             ATPositions = new Set([...highlightPositions[highlight]]);
           }
         }
+        // highlights.forEach((highlight) => {
+        //   // console.log(`highlight ${JSON.stringify(highlight)}`);
+        //   const highlightUC = highlight.toUpperCase();
+        //   const highlightLength = highlight.length;
+        //   let posn = seq.indexOf(highlightUC);
+        //   if (isEmpty(highlightPositions) || !highlightPositions[highlight]) highlightPositions[highlight] = new Array();
+        //   while (posn > -1) {
+        //     highlightPositions[highlight].push(posn + absPosStart + 1); // 1-based indexed positions!
+        //     posn = seq.indexOf(highlightUC, posn + highlightLength);
+        //   }
+        // });
       }
     }
   }
+
+  // if (!isEmpty(highlightPositions)) console.log(`highlightPositions ${JSON.stringify(highlightPositions)}`);
 
   let segmentList = Object.values(allSegments);
   const drawnSegmentIdentifiers = {
@@ -3702,6 +3972,12 @@ const renderSegments = (
   const fiberMinLength = (Object.hasOwn(dataOptions[uid], fiberMinLength)) ? dataOptions[uid].fiberMinLength : 0;
   const fiberMaxLength = (Object.hasOwn(dataOptions[uid], fiberMaxLength)) ? dataOptions[uid].fiberMaxLength : 30000;
   const fiberStrands = (Object.hasOwn(dataOptions[uid], fiberStrands)) ? dataOptions[uid].fiberStrands : ['+', '-'];
+
+  // console.log(`fiberMinLength ${JSON.stringify(fiberMinLength)} | fiberMaxLength ${JSON.stringify(fiberMaxLength)}`);
+
+  // if (dataOptions[uid].methylation) {
+  //   segmentList = segmentList.filter((s) => (s.to - s.from) >= fiberMinLength && (s.to - s.from) <= fiberMaxLength);
+  // }
 
   // if (trackOptions.minMappingQuality > 0){
   //   segmentList = segmentList.filter((s) => s.mapq >= trackOptions.minMappingQuality)
@@ -3766,6 +4042,7 @@ const renderSegments = (
 
   // calculate the the rows of reads for each group
   if (clusterDataObj && trackOptions.methylation) {
+    // console.log(`[higlass-pileup] clusterDataObj ${JSON.stringify(clusterDataObj)}`);
     // const chromName = clusterDataObj.range.left.chrom;
 
     const clusterDataObjToUse = clusterDataObj;
@@ -3788,14 +4065,29 @@ const renderSegments = (
     const integerBasesPerPixel = Math.floor(clusterDataObjToUse.basesPerPixel);
     const viewportWidthInPixels = clusterDataObjToUse.viewportWidthInPixels;
 
+    // console.log(`probabilityThresholdRange ${JSON.stringify(probabilityThresholdRange)}`);
     let distanceFnToCall = null;
     const eventVecLen = chromEnd - chromStart;
+    // const viewportRawEventVecLen = (viewportChromEnd - viewportChromStart <= 5000) ? viewportChromEnd - viewportChromStart : null;
     const viewportRawEventVecLen = viewportChromEnd - viewportChromStart;
+    // const viewportReducedEventVecLen = (integerBasesPerPixel > 0) ? Math.floor(viewportRawEventVecLen / integerBasesPerPixel) : viewportRawEventVecLen;
+    // console.log(`viewportRawEventVecLen ${JSON.stringify(viewportRawEventVecLen)}`);
+    // console.log(`viewportReducedEventVecLen ${JSON.stringify(viewportReducedEventVecLen)}`);
+    // console.log(`viewportWidthInPixels ${JSON.stringify(viewportWidthInPixels)}`);
+    // console.log(`eventVecLen ${JSON.stringify(eventVecLen)}`);
+    // console.log(`integerBasesPerPixel ${JSON.stringify(integerBasesPerPixel)}`);
     const nReads = segmentList.length;
+    // console.log(`nReads ${JSON.stringify(nReads)}`);
     const clusterMatrix = new Array();
+    // const viewportRawEventMatrix = (viewportRawEventVecLen) ? new Array() : [];
+    // const viewportAggregatedEventMatrix = (viewportReducedEventVecLen) ? new Array() : [];
     const identifiersArray = new Array();
     let allowedRowIdx = 0;
     const trueRow = {};
+
+    // console.log(`trackOptions ${JSON.stringify(trackOptions)}`);
+    // console.log(`[higlass-pileup] method ${method} | distanceFn ${distanceFn} | eventCategories ${eventCategories} | linkage ${linkage} | epsilon ${epsilon} | minimumPoints ${minimumPoints} | probabilityThresholdRange ${JSON.stringify(probabilityThresholdRange)} | eventOverlapType ${eventOverlapType} | fiberMinLength ${fiberMinLength} | fiberMaxLength ${fiberMaxLength} | fiberStrands ${fiberStrands} | integerBasesPerPixel ${integerBasesPerPixel} | viewportWidthInPixels ${viewportWidthInPixels}`);
+    // console.log(`[higlass-pileup] chromStart ${JSON.stringify(chromStart)} | chromEnd ${JSON.stringify(chromEnd)}`);
 
     switch (method) {
       case 'AGNES':
@@ -3841,6 +4133,47 @@ const renderSegments = (
                     trueRow[allowedRowIdx] = i;
                     clusterMatrix[allowedRowIdx] = eventVec;
                     identifiersArray.push(segment.readName);
+
+                    // ** viewport event matrix **
+                    // note: full viewport overlap allows init to 0
+                    // for loop provides faster initialization than Array.init
+                    // if (viewportRawEventVecLen) {
+                    //   const viewportRawEventVec = new Array(viewportRawEventVecLen);
+                    //   for (let i = 0; i < viewportRawEventVecLen; i++) {
+                    //     viewportRawEventVec[i] = 0;
+                    //   }
+                    //   const viewportOffsetStart = viewportChromStart - segmentStart;
+                    //   const viewportOffsetEnd = viewportOffsetStart + viewportRawEventVecLen;
+                    //   for (const mo of mos) {
+                    //     const offsets = mo.offsets;
+                    //     const probabilities = mo.probabilities;
+                    //     if ((eventCategories.includes('m6A+') && mo.unmodifiedBase === 'A')
+                    //       || (eventCategories.includes('m6A-') && mo.unmodifiedBase === 'T')
+                    //       || (eventCategories.includes('5mC') && mo.unmodifiedBase === 'C')) {
+                    //       for (let offsetIdx = 0; offsetIdx < offsets.length; offsetIdx++) {
+                    //         const offset = offsets[offsetIdx];
+                    //         const probability = probabilities[offsetIdx];
+                    //         // ** do not filter on probability, to start; maybe change this later **
+                    //         if ((offset >= viewportOffsetStart) && (offset <= viewportOffsetEnd)) {
+                    //           viewportRawEventVec[offset - viewportOffsetStart] = parseInt(probability);
+                    //         }
+                    //       }
+                    //     }
+                    //   }
+                    //   // viewportRawEventMatrix[allowedRowIdx] = viewportRawEventVec;
+                    //   if (integerBasesPerPixel > 1) {
+                    //     viewportAggregatedEventMatrix[allowedRowIdx] = movingMaxima(
+                    //       viewportRawEventVec,
+                    //       viewportRawEventVec.length,
+                    //       0,
+                    //       integerBasesPerPixel - 1,
+                    //       integerBasesPerPixel
+                    //     );
+                    //   }
+                    //   else {
+                    //     viewportAggregatedEventMatrix[allowedRowIdx] = viewportRawEventVec;
+                    //   }
+                    // }
                     allowedRowIdx++;
                   }
                   break;
@@ -3870,6 +4203,63 @@ const renderSegments = (
                     trueRow[allowedRowIdx] = i;
                     clusterMatrix[allowedRowIdx] = eventVec;
                     identifiersArray.push(segment.readName);
+
+                    // ** viewport event matrix **
+                    // note: partial overlap requires init to -255
+                    // if (viewportRawEventVecLen) {
+                    //   const viewportRawEventVec = new Array(viewportRawEventVecLen);
+                    //   for (let i = 0; i < viewportRawEventVecLen; i++) {
+                    //     viewportRawEventVec[i] = -255;
+                    //   }
+                    //   const viewportOffsetStart = viewportChromStart - segmentStart;
+                    //   // initialization is revised to 0 where there is fiber coverage
+                    //   if ((segmentStart < viewportChromStart) && (segmentEnd > viewportChromEnd)) {
+                    //     for (let i = 0; i < viewportRawEventVecLen; i++) {
+                    //       viewportRawEventVec[i] = 0;
+                    //     }
+                    //   }
+                    //   else if ((segmentStart >= viewportChromStart) && (segmentEnd > viewportChromEnd)) {
+                    //     for (let i = viewportOffsetStart; i < viewportRawEventVecLen; i++) {
+                    //       viewportRawEventVec[i] = 0;
+                    //     }
+                    //   }
+                    //   else if ((segmentStart >= viewportChromStart) && (segmentEnd <= viewportChromEnd)) {
+                    //     const viewportOffsetEnd = viewportRawEventVecLen - (viewportChromEnd - segmentEnd);
+                    //     for (let i = viewportOffsetStart; i < viewportOffsetEnd; i++) {
+                    //       viewportRawEventVec[i] = 0;
+                    //     }
+                    //   }
+                    //   for (const mo of mos) {
+                    //     const offsets = mo.offsets;
+                    //     const probabilities = mo.probabilities;
+                    //     if ((eventCategories.includes('m6A+') && mo.unmodifiedBase === 'A')
+                    //       || (eventCategories.includes('m6A-') && mo.unmodifiedBase === 'T')
+                    //       || (eventCategories.includes('5mC') && mo.unmodifiedBase === 'C')) {
+                    //       for (let offsetIdx = 0; offsetIdx < offsets.length; offsetIdx++) {
+                    //         const offset = offsets[offsetIdx] - viewportOffsetStart;
+                    //         const probability = probabilities[offsetIdx];
+                    //         // ** do not filter on probability, to start; maybe change this later **
+                    //         if ((offset >= 0) && (offset < viewportRawEventVecLen)) {
+                    //           viewportRawEventVec[offset] = parseInt(probability);
+                    //         }
+                    //       }
+                    //     }
+                    //   }
+                    //   // viewportRawEventMatrix[allowedRowIdx] = viewportRawEventVec;
+                    //   if (integerBasesPerPixel > 1) {
+                    //     viewportAggregatedEventMatrix[allowedRowIdx] = movingMaxima(
+                    //       viewportRawEventVec,
+                    //       viewportRawEventVec.length,
+                    //       0,
+                    //       integerBasesPerPixel - 1,
+                    //       integerBasesPerPixel
+                    //     );
+                    //   }
+                    //   else {
+                    //     viewportAggregatedEventMatrix[allowedRowIdx] = viewportRawEventVec;
+                    //   }
+                    //   // viewportRawEventVec = [];
+                    // }
                     allowedRowIdx++;
                   }
                   break;
@@ -3899,6 +4289,62 @@ const renderSegments = (
                     trueRow[allowedRowIdx] = i;
                     clusterMatrix[allowedRowIdx] = eventVec;
                     identifiersArray.push(segment.readName);
+
+                    // ** viewport event matrix **
+                    // note: partial overlap requires init to -255
+                    // if (viewportRawEventVecLen) {
+                    //   const viewportRawEventVec = new Array(viewportRawEventVecLen);
+                    //   for (let i = 0; i < viewportRawEventVecLen; i++) {
+                    //     viewportRawEventVec[i] = -255;
+                    //   }
+                    //   const viewportOffsetStart = viewportChromStart - segmentStart;
+                    //   // initialization is revised to 0 where there is fiber coverage
+                    //   if ((segmentStart < viewportChromStart) && (segmentEnd > viewportChromEnd)) {
+                    //     for (let i = 0; i < viewportRawEventVecLen; i++) {
+                    //       viewportRawEventVec[i] = 0;
+                    //     }
+                    //   }
+                    //   else if ((segmentStart >= viewportChromStart) && (segmentEnd > viewportChromEnd)) {
+                    //     for (let i = viewportOffsetStart; i < viewportRawEventVecLen; i++) {
+                    //       viewportRawEventVec[i] = 0;
+                    //     }
+                    //   }
+                    //   else if ((segmentStart >= viewportChromStart) && (segmentEnd <= viewportChromEnd)) {
+                    //     const viewportOffsetEnd = viewportRawEventVecLen - (viewportChromEnd - segmentEnd);
+                    //     for (let i = viewportOffsetStart; i < viewportOffsetEnd; i++) {
+                    //       viewportRawEventVec[i] = 0;
+                    //     }
+                    //   }
+                    //   for (const mo of mos) {
+                    //     const offsets = mo.offsets;
+                    //     const probabilities = mo.probabilities;
+                    //     if ((eventCategories.includes('m6A+') && mo.unmodifiedBase === 'A')
+                    //       || (eventCategories.includes('m6A-') && mo.unmodifiedBase === 'T')
+                    //       || (eventCategories.includes('5mC') && mo.unmodifiedBase === 'C')) {
+                    //       for (let offsetIdx = 0; offsetIdx < offsets.length; offsetIdx++) {
+                    //         const offset = offsets[offsetIdx] - viewportOffsetStart;
+                    //         const probability = probabilities[offsetIdx];
+                    //         // ** do not filter on probability, to start; maybe change this later **
+                    //         if ((offset >= 0) && (offset < viewportRawEventVecLen)) {
+                    //           viewportRawEventVec[offset] = parseInt(probability);
+                    //         }
+                    //       }
+                    //     }
+                    //   }
+                    //   // viewportRawEventMatrix[allowedRowIdx] = viewportRawEventVec;
+                    //   if (integerBasesPerPixel > 1) {
+                    //     viewportAggregatedEventMatrix[allowedRowIdx] = movingMaxima(
+                    //       viewportRawEventVec,
+                    //       viewportRawEventVec.length,
+                    //       0,
+                    //       integerBasesPerPixel - 1,
+                    //       integerBasesPerPixel
+                    //     );
+                    //   }
+                    //   else {
+                    //     viewportAggregatedEventMatrix[allowedRowIdx] = viewportRawEventVec;
+                    //   }
+                    // }
                     allowedRowIdx++;
                   }
                   else if ((segmentStart >= chromStart) && (segmentEnd <= chromEnd)) {
@@ -3924,6 +4370,62 @@ const renderSegments = (
                     trueRow[allowedRowIdx] = i;
                     clusterMatrix[allowedRowIdx] = eventVec;
                     identifiersArray.push(segment.readName);
+
+                    // ** viewport event matrix **
+                    // note: partial overlap requires init to -255
+                    // if (viewportRawEventVecLen) {
+                    //   const viewportRawEventVec = new Array(viewportRawEventVecLen);
+                    //   for (let i = 0; i < viewportRawEventVecLen; i++) {
+                    //     viewportRawEventVec[i] = -255;
+                    //   }
+                    //   const viewportOffsetStart = viewportChromStart - segmentStart;
+                    //   // initialization is revised to 0 where there is fiber coverage
+                    //   if ((segmentStart < viewportChromStart) && (segmentEnd > viewportChromEnd)) {
+                    //     for (let i = 0; i < viewportRawEventVecLen; i++) {
+                    //       viewportRawEventVec[i] = 0;
+                    //     }
+                    //   }
+                    //   else if ((segmentStart >= viewportChromStart) && (segmentEnd > viewportChromEnd)) {
+                    //     for (let i = viewportOffsetStart; i < viewportRawEventVecLen; i++) {
+                    //       viewportRawEventVec[i] = 0;
+                    //     }
+                    //   }
+                    //   else if ((segmentStart >= viewportChromStart) && (segmentEnd <= viewportChromEnd)) {
+                    //     const viewportOffsetEnd = viewportRawEventVecLen - (viewportChromEnd - segmentEnd);
+                    //     for (let i = viewportOffsetStart; i < viewportOffsetEnd; i++) {
+                    //       viewportRawEventVec[i] = 0;
+                    //     }
+                    //   }
+                    //   for (const mo of mos) {
+                    //     const offsets = mo.offsets;
+                    //     const probabilities = mo.probabilities;
+                    //     if ((eventCategories.includes('m6A+') && mo.unmodifiedBase === 'A')
+                    //       || (eventCategories.includes('m6A-') && mo.unmodifiedBase === 'T')
+                    //       || (eventCategories.includes('5mC') && mo.unmodifiedBase === 'C')) {
+                    //       for (let offsetIdx = 0; offsetIdx < offsets.length; offsetIdx++) {
+                    //         const offset = offsets[offsetIdx] - viewportOffsetStart;
+                    //         const probability = probabilities[offsetIdx];
+                    //         // ** do not filter on probability, to start; maybe change this later **
+                    //         if ((offset >= 0) && (offset < viewportRawEventVecLen)) {
+                    //           viewportRawEventVec[offset] = parseInt(probability);
+                    //         }
+                    //       }
+                    //     }
+                    //   }
+                    //   // viewportRawEventMatrix[allowedRowIdx] = viewportRawEventVec;
+                    //   if (integerBasesPerPixel > 1) {
+                    //     viewportAggregatedEventMatrix[allowedRowIdx] = movingMaxima(
+                    //       viewportRawEventVec,
+                    //       viewportRawEventVec.length,
+                    //       0,
+                    //       integerBasesPerPixel - 1,
+                    //       integerBasesPerPixel
+                    //     );
+                    //   }
+                    //   else {
+                    //     viewportAggregatedEventMatrix[allowedRowIdx] = viewportRawEventVec;
+                    //   }
+                    // }
                     allowedRowIdx++;
                   }
                   else if ((segmentStart < chromStart) && (segmentEnd <= chromEnd) && (segmentEnd > chromStart)) {
@@ -3950,6 +4452,62 @@ const renderSegments = (
                     trueRow[allowedRowIdx] = i;
                     clusterMatrix[allowedRowIdx] = eventVec;
                     identifiersArray.push(segment.readName);
+
+                    // ** viewport event matrix **
+                    // note: partial overlap requires init to -255
+                    // if (viewportRawEventVecLen) {
+                    //   const viewportRawEventVec = new Array(viewportRawEventVecLen);
+                    //   for (let i = 0; i < viewportRawEventVecLen; i++) {
+                    //     viewportRawEventVec[i] = -255;
+                    //   }
+                    //   const viewportOffsetStart = viewportChromStart - segmentStart;
+                    //   // initialization is revised to 0 where there is fiber coverage
+                    //   if ((segmentStart < viewportChromStart) && (segmentEnd > viewportChromEnd)) {
+                    //     for (let i = 0; i < viewportRawEventVecLen; i++) {
+                    //       viewportRawEventVec[i] = 0;
+                    //     }
+                    //   }
+                    //   else if ((segmentStart >= viewportChromStart) && (segmentEnd > viewportChromEnd)) {
+                    //     for (let i = viewportOffsetStart; i < viewportRawEventVecLen; i++) {
+                    //       viewportRawEventVec[i] = 0;
+                    //     }
+                    //   }
+                    //   else if ((segmentStart >= viewportChromStart) && (segmentEnd <= viewportChromEnd)) {
+                    //     const viewportOffsetEnd = viewportRawEventVecLen - (viewportChromEnd - segmentEnd);
+                    //     for (let i = viewportOffsetStart; i < viewportOffsetEnd; i++) {
+                    //       viewportRawEventVec[i] = 0;
+                    //     }
+                    //   }
+                    //   for (const mo of mos) {
+                    //     const offsets = mo.offsets;
+                    //     const probabilities = mo.probabilities;
+                    //     if ((eventCategories.includes('m6A+') && mo.unmodifiedBase === 'A')
+                    //       || (eventCategories.includes('m6A-') && mo.unmodifiedBase === 'T')
+                    //       || (eventCategories.includes('5mC') && mo.unmodifiedBase === 'C')) {
+                    //       for (let offsetIdx = 0; offsetIdx < offsets.length; offsetIdx++) {
+                    //         const offset = offsets[offsetIdx] - viewportOffsetStart;
+                    //         const probability = probabilities[offsetIdx];
+                    //         // ** do not filter on probability, to start; maybe change this later **
+                    //         if ((offset >= 0) && (offset < viewportRawEventVecLen)) {
+                    //           viewportRawEventVec[offset] = parseInt(probability);
+                    //         }
+                    //       }
+                    //     }
+                    //   }
+                    //   // viewportRawEventMatrix[allowedRowIdx] = viewportRawEventVec;
+                    //   if (integerBasesPerPixel > 1) {
+                    //     viewportAggregatedEventMatrix[allowedRowIdx] = movingMaxima(
+                    //       viewportRawEventVec,
+                    //       viewportRawEventVec.length,
+                    //       0,
+                    //       integerBasesPerPixel - 1,
+                    //       integerBasesPerPixel
+                    //     );
+                    //   }
+                    //   else {
+                    //     viewportAggregatedEventMatrix[allowedRowIdx] = viewportRawEventVec;
+                    //   }
+                    // }
                     allowedRowIdx++;
                   }
                   else if ((segmentStart >= chromStart) && (segmentStart < chromEnd) && (segmentEnd > chromEnd)) {
@@ -3976,6 +4534,62 @@ const renderSegments = (
                     trueRow[allowedRowIdx] = i;
                     clusterMatrix[allowedRowIdx] = eventVec;
                     identifiersArray.push(segment.readName);
+
+                    // ** viewport event matrix **
+                    // note: partial overlap requires init to -255
+                    // if (viewportRawEventVecLen) {
+                    //   const viewportRawEventVec = new Array(viewportRawEventVecLen);
+                    //   for (let i = 0; i < viewportRawEventVecLen; i++) {
+                    //     viewportRawEventVec[i] = -255;
+                    //   }
+                    //   const viewportOffsetStart = viewportChromStart - segmentStart;
+                    //   // initialization is revised to 0 where there is fiber coverage
+                    //   if ((segmentStart < viewportChromStart) && (segmentEnd > viewportChromEnd)) {
+                    //     for (let i = 0; i < viewportRawEventVecLen; i++) {
+                    //       viewportRawEventVec[i] = 0;
+                    //     }
+                    //   }
+                    //   else if ((segmentStart >= viewportChromStart) && (segmentEnd > viewportChromEnd)) {
+                    //     for (let i = viewportOffsetStart; i < viewportRawEventVecLen; i++) {
+                    //       viewportRawEventVec[i] = 0;
+                    //     }
+                    //   }
+                    //   else if ((segmentStart >= viewportChromStart) && (segmentEnd <= viewportChromEnd)) {
+                    //     const viewportOffsetEnd = viewportRawEventVecLen - (viewportChromEnd - segmentEnd);
+                    //     for (let i = viewportOffsetStart; i < viewportOffsetEnd; i++) {
+                    //       viewportRawEventVec[i] = 0;
+                    //     }
+                    //   }
+                    //   for (const mo of mos) {
+                    //     const offsets = mo.offsets;
+                    //     const probabilities = mo.probabilities;
+                    //     if ((eventCategories.includes('m6A+') && mo.unmodifiedBase === 'A')
+                    //       || (eventCategories.includes('m6A-') && mo.unmodifiedBase === 'T')
+                    //       || (eventCategories.includes('5mC') && mo.unmodifiedBase === 'C')) {
+                    //       for (let offsetIdx = 0; offsetIdx < offsets.length; offsetIdx++) {
+                    //         const offset = offsets[offsetIdx] - viewportOffsetStart;
+                    //         const probability = probabilities[offsetIdx];
+                    //         // ** do not filter on probability, to start; maybe change this later **
+                    //         if ((offset >= 0) && (offset < viewportRawEventVecLen)) {
+                    //           viewportRawEventVec[offset] = parseInt(probability);
+                    //         }
+                    //       }
+                    //     }
+                    //   }
+                    //   // viewportRawEventMatrix[allowedRowIdx] = viewportRawEventVec;
+                    //   if (integerBasesPerPixel > 1) {
+                    //     viewportAggregatedEventMatrix[allowedRowIdx] = movingMaxima(
+                    //       viewportRawEventVec,
+                    //       viewportRawEventVec.length,
+                    //       0,
+                    //       integerBasesPerPixel - 1,
+                    //       integerBasesPerPixel
+                    //     );
+                    //   }
+                    //   else {
+                    //     viewportAggregatedEventMatrix[allowedRowIdx] = viewportRawEventVec;
+                    //   }
+                    // }
                     allowedRowIdx++;
                   }
                   break;
@@ -4024,6 +4638,47 @@ const renderSegments = (
                     trueRow[allowedRowIdx] = i;
                     clusterMatrix[allowedRowIdx] = eventVec;
                     identifiersArray.push(segment.readName);
+
+                    // ** viewport event matrix **
+                    // note: full viewport overlap allows init to 0
+                    // for loop provides faster initialization than Array.init
+                    // if (viewportRawEventVecLen) {
+                    //   const viewportRawEventVec = new Array(viewportRawEventVecLen);
+                    //   for (let i = 0; i < viewportRawEventVecLen; i++) {
+                    //     viewportRawEventVec[i] = 0;
+                    //   }
+                    //   const viewportOffsetStart = viewportChromStart - segmentStart;
+                    //   const viewportOffsetEnd = viewportOffsetStart + viewportRawEventVecLen;
+                    //   for (const mo of mos) {
+                    //     const offsets = mo.offsets;
+                    //     const probabilities = mo.probabilities;
+                    //     if ((eventCategories.includes('m6A+') && mo.unmodifiedBase === 'A')
+                    //       || (eventCategories.includes('m6A-') && mo.unmodifiedBase === 'T')
+                    //       || (eventCategories.includes('5mC') && mo.unmodifiedBase === 'C')) {
+                    //       for (let offsetIdx = 0; offsetIdx < offsets.length; offsetIdx++) {
+                    //         const offset = offsets[offsetIdx];
+                    //         const probability = probabilities[offsetIdx];
+                    //         // ** do not filter on probability, to start; maybe change this later **
+                    //         if ((offset >= viewportOffsetStart) && (offset <= viewportOffsetEnd)) {
+                    //           viewportRawEventVec[offset - viewportOffsetStart] = 1;
+                    //         }
+                    //       }
+                    //     }
+                    //   }
+                    //   // viewportRawEventMatrix[allowedRowIdx] = viewportRawEventVec;
+                    //   if (integerBasesPerPixel > 1) {
+                    //     viewportAggregatedEventMatrix[allowedRowIdx] = movingMaxima(
+                    //       viewportRawEventVec,
+                    //       viewportRawEventVec.length,
+                    //       0,
+                    //       integerBasesPerPixel - 1,
+                    //       integerBasesPerPixel
+                    //     );
+                    //   }
+                    //   else {
+                    //     viewportAggregatedEventMatrix[allowedRowIdx] = viewportRawEventVec;
+                    //   }
+                    // }
                     allowedRowIdx++;
                   }
                   break;
@@ -4052,6 +4707,62 @@ const renderSegments = (
                     trueRow[allowedRowIdx] = i;
                     clusterMatrix[allowedRowIdx] = eventVec;
                     identifiersArray.push(segment.readName);
+
+                    // ** viewport event matrix **
+                    // note: partial overlap requires init to -255
+                    // if (viewportRawEventVecLen) {
+                    //   const viewportRawEventVec = new Array(viewportRawEventVecLen);
+                    //   for (let i = 0; i < viewportRawEventVecLen; i++) {
+                    //     viewportRawEventVec[i] = -255;
+                    //   }
+                    //   const viewportOffsetStart = viewportChromStart - segmentStart;
+                    //   // initialization is revised to 0 where there is fiber coverage
+                    //   if ((segmentStart < viewportChromStart) && (segmentEnd > viewportChromEnd)) {
+                    //     for (let i = 0; i < viewportRawEventVecLen; i++) {
+                    //       viewportRawEventVec[i] = 0;
+                    //     }
+                    //   }
+                    //   else if ((segmentStart >= viewportChromStart) && (segmentEnd > viewportChromEnd)) {
+                    //     for (let i = viewportOffsetStart; i < viewportRawEventVecLen; i++) {
+                    //       viewportRawEventVec[i] = 0;
+                    //     }
+                    //   }
+                    //   else if ((segmentStart >= viewportChromStart) && (segmentEnd <= viewportChromEnd)) {
+                    //     const viewportOffsetEnd = viewportRawEventVecLen - (viewportChromEnd - segmentEnd);
+                    //     for (let i = viewportOffsetStart; i < viewportOffsetEnd; i++) {
+                    //       viewportRawEventVec[i] = 0;
+                    //     }
+                    //   }
+                    //   for (const mo of mos) {
+                    //     const offsets = mo.offsets;
+                    //     const probabilities = mo.probabilities;
+                    //     if ((eventCategories.includes('m6A+') && mo.unmodifiedBase === 'A')
+                    //       || (eventCategories.includes('m6A-') && mo.unmodifiedBase === 'T')
+                    //       || (eventCategories.includes('5mC') && mo.unmodifiedBase === 'C')) {
+                    //       for (let offsetIdx = 0; offsetIdx < offsets.length; offsetIdx++) {
+                    //         const offset = offsets[offsetIdx] - viewportOffsetStart;
+                    //         const probability = probabilities[offsetIdx];
+                    //         // ** do not filter on probability, to start; maybe change this later **
+                    //         if ((offset >= 0) && (offset < viewportRawEventVecLen)) {
+                    //           viewportRawEventVec[offset] = 1;
+                    //         }
+                    //       }
+                    //     }
+                    //   }
+                    //   // viewportRawEventMatrix[allowedRowIdx] = viewportRawEventVec;
+                    //   if (integerBasesPerPixel > 1) {
+                    //     viewportAggregatedEventMatrix[allowedRowIdx] = movingMaxima(
+                    //       viewportRawEventVec,
+                    //       viewportRawEventVec.length,
+                    //       0,
+                    //       integerBasesPerPixel - 1,
+                    //       integerBasesPerPixel
+                    //     );
+                    //   }
+                    //   else {
+                    //     viewportAggregatedEventMatrix[allowedRowIdx] = viewportRawEventVec;
+                    //   }
+                    // }
                     allowedRowIdx++;
                   }
                   break;
@@ -4080,6 +4791,62 @@ const renderSegments = (
                     trueRow[allowedRowIdx] = i;
                     clusterMatrix[allowedRowIdx] = eventVec;
                     identifiersArray.push(segment.readName);
+
+                    // ** viewport event matrix **
+                    // note: partial overlap requires init to -255
+                    // if (viewportRawEventVecLen) {
+                    //   const viewportRawEventVec = new Array(viewportRawEventVecLen);
+                    //   for (let i = 0; i < viewportRawEventVecLen; i++) {
+                    //     viewportRawEventVec[i] = -255;
+                    //   }
+                    //   const viewportOffsetStart = viewportChromStart - segmentStart;
+                    //   // initialization is revised to 0 where there is fiber coverage
+                    //   if ((segmentStart < viewportChromStart) && (segmentEnd > viewportChromEnd)) {
+                    //     for (let i = 0; i < viewportRawEventVecLen; i++) {
+                    //       viewportRawEventVec[i] = 0;
+                    //     }
+                    //   }
+                    //   else if ((segmentStart >= viewportChromStart) && (segmentEnd > viewportChromEnd)) {
+                    //     for (let i = viewportOffsetStart; i < viewportRawEventVecLen; i++) {
+                    //       viewportRawEventVec[i] = 0;
+                    //     }
+                    //   }
+                    //   else if ((segmentStart >= viewportChromStart) && (segmentEnd <= viewportChromEnd)) {
+                    //     const viewportOffsetEnd = viewportRawEventVecLen - (viewportChromEnd - segmentEnd);
+                    //     for (let i = viewportOffsetStart; i < viewportOffsetEnd; i++) {
+                    //       viewportRawEventVec[i] = 0;
+                    //     }
+                    //   }
+                    //   for (const mo of mos) {
+                    //     const offsets = mo.offsets;
+                    //     const probabilities = mo.probabilities;
+                    //     if ((eventCategories.includes('m6A+') && mo.unmodifiedBase === 'A')
+                    //       || (eventCategories.includes('m6A-') && mo.unmodifiedBase === 'T')
+                    //       || (eventCategories.includes('5mC') && mo.unmodifiedBase === 'C')) {
+                    //       for (let offsetIdx = 0; offsetIdx < offsets.length; offsetIdx++) {
+                    //         const offset = offsets[offsetIdx] - viewportOffsetStart;
+                    //         const probability = probabilities[offsetIdx];
+                    //         // ** do not filter on probability, to start; maybe change this later **
+                    //         if ((offset >= 0) && (offset < viewportRawEventVecLen)) {
+                    //           viewportRawEventVec[offset] = 1;
+                    //         }
+                    //       }
+                    //     }
+                    //   }
+                    //   // viewportRawEventMatrix[allowedRowIdx] = viewportRawEventVec;
+                    //   if (integerBasesPerPixel > 1) {
+                    //     viewportAggregatedEventMatrix[allowedRowIdx] = movingMaxima(
+                    //       viewportRawEventVec,
+                    //       viewportRawEventVec.length,
+                    //       0,
+                    //       integerBasesPerPixel - 1,
+                    //       integerBasesPerPixel
+                    //     );
+                    //   }
+                    //   else {
+                    //     viewportAggregatedEventMatrix[allowedRowIdx] = viewportRawEventVec;
+                    //   }
+                    // }
                     allowedRowIdx++;
                   }
                   else if ((segmentStart >= chromStart) && (segmentEnd <= chromEnd)) {
@@ -4105,6 +4872,62 @@ const renderSegments = (
                     trueRow[allowedRowIdx] = i;
                     clusterMatrix[allowedRowIdx] = eventVec;
                     identifiersArray.push(segment.readName);
+
+                    // ** viewport event matrix **
+                    // note: partial overlap requires init to -255
+                    // if (viewportRawEventVecLen) {
+                    //   const viewportRawEventVec = new Array(viewportRawEventVecLen);
+                    //   for (let i = 0; i < viewportRawEventVecLen; i++) {
+                    //     viewportRawEventVec[i] = -255;
+                    //   }
+                    //   const viewportOffsetStart = viewportChromStart - segmentStart;
+                    //   // initialization is revised to 0 where there is fiber coverage
+                    //   if ((segmentStart < viewportChromStart) && (segmentEnd > viewportChromEnd)) {
+                    //     for (let i = 0; i < viewportRawEventVecLen; i++) {
+                    //       viewportRawEventVec[i] = 0;
+                    //     }
+                    //   }
+                    //   else if ((segmentStart >= viewportChromStart) && (segmentEnd > viewportChromEnd)) {
+                    //     for (let i = viewportOffsetStart; i < viewportRawEventVecLen; i++) {
+                    //       viewportRawEventVec[i] = 0;
+                    //     }
+                    //   }
+                    //   else if ((segmentStart >= viewportChromStart) && (segmentEnd <= viewportChromEnd)) {
+                    //     const viewportOffsetEnd = viewportRawEventVecLen - (viewportChromEnd - segmentEnd);
+                    //     for (let i = viewportOffsetStart; i < viewportOffsetEnd; i++) {
+                    //       viewportRawEventVec[i] = 0;
+                    //     }
+                    //   }
+                    //   for (const mo of mos) {
+                    //     const offsets = mo.offsets;
+                    //     const probabilities = mo.probabilities;
+                    //     if ((eventCategories.includes('m6A+') && mo.unmodifiedBase === 'A')
+                    //       || (eventCategories.includes('m6A-') && mo.unmodifiedBase === 'T')
+                    //       || (eventCategories.includes('5mC') && mo.unmodifiedBase === 'C')) {
+                    //       for (let offsetIdx = 0; offsetIdx < offsets.length; offsetIdx++) {
+                    //         const offset = offsets[offsetIdx] - viewportOffsetStart;
+                    //         const probability = probabilities[offsetIdx];
+                    //         // ** do not filter on probability, to start; maybe change this later **
+                    //         if ((offset >= 0) && (offset < viewportRawEventVecLen)) {
+                    //           viewportRawEventVec[offset] = 1;
+                    //         }
+                    //       }
+                    //     }
+                    //   }
+                    //   // viewportRawEventMatrix[allowedRowIdx] = viewportRawEventVec;
+                    //   if (integerBasesPerPixel > 1) {
+                    //     viewportAggregatedEventMatrix[allowedRowIdx] = movingMaxima(
+                    //       viewportRawEventVec,
+                    //       viewportRawEventVec.length,
+                    //       0,
+                    //       integerBasesPerPixel - 1,
+                    //       integerBasesPerPixel
+                    //     );
+                    //   }
+                    //   else {
+                    //     viewportAggregatedEventMatrix[allowedRowIdx] = viewportRawEventVec;
+                    //   }
+                    // }
                     allowedRowIdx++;
                   }
                   else if ((segmentStart < chromStart) && (segmentEnd <= chromEnd) && (segmentEnd > chromStart)) {
@@ -4131,6 +4954,62 @@ const renderSegments = (
                     trueRow[allowedRowIdx] = i;
                     clusterMatrix[allowedRowIdx] = eventVec;
                     identifiersArray.push(segment.readName);
+
+                    // ** viewport event matrix **
+                    // note: partial overlap requires init to -255
+                    // if (viewportRawEventVecLen) {
+                    //   const viewportRawEventVec = new Array(viewportRawEventVecLen);
+                    //   for (let i = 0; i < viewportRawEventVecLen; i++) {
+                    //     viewportRawEventVec[i] = -255;
+                    //   }
+                    //   const viewportOffsetStart = viewportChromStart - segmentStart;
+                    //   // initialization is revised to 0 where there is fiber coverage
+                    //   if ((segmentStart < viewportChromStart) && (segmentEnd > viewportChromEnd)) {
+                    //     for (let i = 0; i < viewportRawEventVecLen; i++) {
+                    //       viewportRawEventVec[i] = 0;
+                    //     }
+                    //   }
+                    //   else if ((segmentStart >= viewportChromStart) && (segmentEnd > viewportChromEnd)) {
+                    //     for (let i = viewportOffsetStart; i < viewportRawEventVecLen; i++) {
+                    //       viewportRawEventVec[i] = 0;
+                    //     }
+                    //   }
+                    //   else if ((segmentStart >= viewportChromStart) && (segmentEnd <= viewportChromEnd)) {
+                    //     const viewportOffsetEnd = viewportRawEventVecLen - (viewportChromEnd - segmentEnd);
+                    //     for (let i = viewportOffsetStart; i < viewportOffsetEnd; i++) {
+                    //       viewportRawEventVec[i] = 0;
+                    //     }
+                    //   }
+                    //   for (const mo of mos) {
+                    //     const offsets = mo.offsets;
+                    //     const probabilities = mo.probabilities;
+                    //     if ((eventCategories.includes('m6A+') && mo.unmodifiedBase === 'A')
+                    //       || (eventCategories.includes('m6A-') && mo.unmodifiedBase === 'T')
+                    //       || (eventCategories.includes('5mC') && mo.unmodifiedBase === 'C')) {
+                    //       for (let offsetIdx = 0; offsetIdx < offsets.length; offsetIdx++) {
+                    //         const offset = offsets[offsetIdx] - viewportOffsetStart;
+                    //         const probability = probabilities[offsetIdx];
+                    //         // ** do not filter on probability, to start; maybe change this later **
+                    //         if ((offset >= 0) && (offset < viewportRawEventVecLen)) {
+                    //           viewportRawEventVec[offset] = 1;
+                    //         }
+                    //       }
+                    //     }
+                    //   }
+                    //   // viewportRawEventMatrix[allowedRowIdx] = viewportRawEventVec;
+                    //   if (integerBasesPerPixel > 1) {
+                    //     viewportAggregatedEventMatrix[allowedRowIdx] = movingMaxima(
+                    //       viewportRawEventVec,
+                    //       viewportRawEventVec.length,
+                    //       0,
+                    //       integerBasesPerPixel - 1,
+                    //       integerBasesPerPixel
+                    //     );
+                    //   }
+                    //   else {
+                    //     viewportAggregatedEventMatrix[allowedRowIdx] = viewportRawEventVec;
+                    //   }
+                    // }
                     allowedRowIdx++;
                   }
                   else if ((segmentStart >= chromStart) && (segmentStart < chromEnd) && (segmentEnd > chromEnd)) {
@@ -4157,6 +5036,62 @@ const renderSegments = (
                     trueRow[allowedRowIdx] = i;
                     clusterMatrix[allowedRowIdx] = eventVec;
                     identifiersArray.push(segment.readName);
+
+                    // ** viewport event matrix **
+                    // note: partial overlap requires init to -255
+                    // if (viewportRawEventVecLen) {
+                    //   const viewportRawEventVec = new Array(viewportRawEventVecLen);
+                    //   for (let i = 0; i < viewportRawEventVecLen; i++) {
+                    //     viewportRawEventVec[i] = -255;
+                    //   }
+                    //   const viewportOffsetStart = viewportChromStart - segmentStart;
+                    //   // initialization is revised to 0 where there is fiber coverage
+                    //   if ((segmentStart < viewportChromStart) && (segmentEnd > viewportChromEnd)) {
+                    //     for (let i = 0; i < viewportRawEventVecLen; i++) {
+                    //       viewportRawEventVec[i] = 0;
+                    //     }
+                    //   }
+                    //   else if ((segmentStart >= viewportChromStart) && (segmentEnd > viewportChromEnd)) {
+                    //     for (let i = viewportOffsetStart; i < viewportRawEventVecLen; i++) {
+                    //       viewportRawEventVec[i] = 0;
+                    //     }
+                    //   }
+                    //   else if ((segmentStart >= viewportChromStart) && (segmentEnd <= viewportChromEnd)) {
+                    //     const viewportOffsetEnd = viewportRawEventVecLen - (viewportChromEnd - segmentEnd);
+                    //     for (let i = viewportOffsetStart; i < viewportOffsetEnd; i++) {
+                    //       viewportRawEventVec[i] = 0;
+                    //     }
+                    //   }
+                    //   for (const mo of mos) {
+                    //     const offsets = mo.offsets;
+                    //     const probabilities = mo.probabilities;
+                    //     if ((eventCategories.includes('m6A+') && mo.unmodifiedBase === 'A')
+                    //       || (eventCategories.includes('m6A-') && mo.unmodifiedBase === 'T')
+                    //       || (eventCategories.includes('5mC') && mo.unmodifiedBase === 'C')) {
+                    //       for (let offsetIdx = 0; offsetIdx < offsets.length; offsetIdx++) {
+                    //         const offset = offsets[offsetIdx] - viewportOffsetStart;
+                    //         const probability = probabilities[offsetIdx];
+                    //         // ** do not filter on probability, to start; maybe change this later **
+                    //         if ((offset >= 0) && (offset < viewportRawEventVecLen)) {
+                    //           viewportRawEventVec[offset] = 1;
+                    //         }
+                    //       }
+                    //     }
+                    //   }
+                    //   // viewportRawEventMatrix[allowedRowIdx] = viewportRawEventVec;
+                    //   if (integerBasesPerPixel > 1) {
+                    //     viewportAggregatedEventMatrix[allowedRowIdx] = movingMaxima(
+                    //       viewportRawEventVec,
+                    //       viewportRawEventVec.length,
+                    //       0,
+                    //       integerBasesPerPixel - 1,
+                    //       integerBasesPerPixel
+                    //     );
+                    //   }
+                    //   else {
+                    //     viewportAggregatedEventMatrix[allowedRowIdx] = viewportRawEventVec;
+                    //   }
+                    // }
                     allowedRowIdx++;
                   }
                   break;
@@ -4211,6 +5146,47 @@ const renderSegments = (
                     trueRow[allowedRowIdx] = i;
                     clusterMatrix[allowedRowIdx] = eventVec;
                     identifiersArray.push(segment.readName);
+
+                    // ** viewport event matrix **
+                    // note: full viewport overlap allows init to 0
+                    // for loop provides faster initialization than Array.init
+                    // if (viewportRawEventVecLen) {
+                    //   const viewportRawEventVec = new Array(viewportRawEventVecLen);
+                    //   for (let i = 0; i < viewportRawEventVecLen; i++) {
+                    //     viewportRawEventVec[i] = 0;
+                    //   }
+                    //   const viewportOffsetStart = viewportChromStart - segmentStart;
+                    //   const viewportOffsetEnd = viewportOffsetStart + viewportRawEventVecLen;
+                    //   for (const mo of mos) {
+                    //     const offsets = mo.offsets;
+                    //     const probabilities = mo.probabilities;
+                    //     if ((eventCategories.includes('m6A+') && mo.unmodifiedBase === 'A')
+                    //       || (eventCategories.includes('m6A-') && mo.unmodifiedBase === 'T')
+                    //       || (eventCategories.includes('5mC') && mo.unmodifiedBase === 'C')) {
+                    //       for (let offsetIdx = 0; offsetIdx < offsets.length; offsetIdx++) {
+                    //         const offset = offsets[offsetIdx];
+                    //         const probability = probabilities[offsetIdx];
+                    //         // ** do not filter on probability, to start; maybe change this later **
+                    //         if ((offset >= viewportOffsetStart) && (offset <= viewportOffsetEnd)) {
+                    //           viewportRawEventVec[offset - viewportOffsetStart] = parseInt(probability);
+                    //         }
+                    //       }
+                    //     }
+                    //   }
+                    //   // viewportRawEventMatrix[allowedRowIdx] = viewportRawEventVec;
+                    //   if (integerBasesPerPixel > 1) {
+                    //     viewportAggregatedEventMatrix[allowedRowIdx] = movingMaxima(
+                    //       viewportRawEventVec,
+                    //       viewportRawEventVec.length,
+                    //       0,
+                    //       integerBasesPerPixel - 1,
+                    //       integerBasesPerPixel
+                    //     );
+                    //   }
+                    //   else {
+                    //     viewportAggregatedEventMatrix[allowedRowIdx] = viewportRawEventVec;
+                    //   }
+                    // }
                     allowedRowIdx++;
                   }
                   break;
@@ -4239,6 +5215,62 @@ const renderSegments = (
                     trueRow[allowedRowIdx] = i;
                     clusterMatrix[allowedRowIdx] = eventVec;
                     identifiersArray.push(segment.readName);
+
+                    // ** viewport event matrix **
+                    // note: partial overlap requires init to -255
+                    // if (viewportRawEventVecLen) {
+                    //   const viewportRawEventVec = new Array(viewportRawEventVecLen);
+                    //   for (let i = 0; i < viewportRawEventVecLen; i++) {
+                    //     viewportRawEventVec[i] = -255;
+                    //   }
+                    //   const viewportOffsetStart = viewportChromStart - segmentStart;
+                    //   // initialization is revised to 0 where there is fiber coverage
+                    //   if ((segmentStart < viewportChromStart) && (segmentEnd > viewportChromEnd)) {
+                    //     for (let i = 0; i < viewportRawEventVecLen; i++) {
+                    //       viewportRawEventVec[i] = 0;
+                    //     }
+                    //   }
+                    //   else if ((segmentStart >= viewportChromStart) && (segmentEnd > viewportChromEnd)) {
+                    //     for (let i = viewportOffsetStart; i < viewportRawEventVecLen; i++) {
+                    //       viewportRawEventVec[i] = 0;
+                    //     }
+                    //   }
+                    //   else if ((segmentStart >= viewportChromStart) && (segmentEnd <= viewportChromEnd)) {
+                    //     const viewportOffsetEnd = viewportRawEventVecLen - (viewportChromEnd - segmentEnd);
+                    //     for (let i = viewportOffsetStart; i < viewportOffsetEnd; i++) {
+                    //       viewportRawEventVec[i] = 0;
+                    //     }
+                    //   }
+                    //   for (const mo of mos) {
+                    //     const offsets = mo.offsets;
+                    //     const probabilities = mo.probabilities;
+                    //     if ((eventCategories.includes('m6A+') && mo.unmodifiedBase === 'A')
+                    //       || (eventCategories.includes('m6A-') && mo.unmodifiedBase === 'T')
+                    //       || (eventCategories.includes('5mC') && mo.unmodifiedBase === 'C')) {
+                    //       for (let offsetIdx = 0; offsetIdx < offsets.length; offsetIdx++) {
+                    //         const offset = offsets[offsetIdx] - viewportOffsetStart;
+                    //         const probability = probabilities[offsetIdx];
+                    //         // ** do not filter on probability, to start; maybe change this later **
+                    //         if ((offset >= 0) && (offset < viewportRawEventVecLen)) {
+                    //           viewportRawEventVec[offset] = parseInt(probability);
+                    //         }
+                    //       }
+                    //     }
+                    //   }
+                    //   // viewportRawEventMatrix[allowedRowIdx] = viewportRawEventVec;
+                    //   if (integerBasesPerPixel > 1) {
+                    //     viewportAggregatedEventMatrix[allowedRowIdx] = movingMaxima(
+                    //       viewportRawEventVec,
+                    //       viewportRawEventVec.length,
+                    //       0,
+                    //       integerBasesPerPixel - 1,
+                    //       integerBasesPerPixel
+                    //     );
+                    //   }
+                    //   else {
+                    //     viewportAggregatedEventMatrix[allowedRowIdx] = viewportRawEventVec;
+                    //   }
+                    // }
                     allowedRowIdx++;
                   }
                   break;
@@ -4267,6 +5299,62 @@ const renderSegments = (
                     trueRow[allowedRowIdx] = i;
                     clusterMatrix[allowedRowIdx] = eventVec;
                     identifiersArray.push(segment.readName);
+
+                    // ** viewport event matrix **
+                    // note: partial overlap requires init to -255
+                    // if (viewportRawEventVecLen) {
+                    //   const viewportRawEventVec = new Array(viewportRawEventVecLen);
+                    //   for (let i = 0; i < viewportRawEventVecLen; i++) {
+                    //     viewportRawEventVec[i] = -255;
+                    //   }
+                    //   const viewportOffsetStart = viewportChromStart - segmentStart;
+                    //   // initialization is revised to 0 where there is fiber coverage
+                    //   if ((segmentStart < viewportChromStart) && (segmentEnd > viewportChromEnd)) {
+                    //     for (let i = 0; i < viewportRawEventVecLen; i++) {
+                    //       viewportRawEventVec[i] = 0;
+                    //     }
+                    //   }
+                    //   else if ((segmentStart >= viewportChromStart) && (segmentEnd > viewportChromEnd)) {
+                    //     for (let i = viewportOffsetStart; i < viewportRawEventVecLen; i++) {
+                    //       viewportRawEventVec[i] = 0;
+                    //     }
+                    //   }
+                    //   else if ((segmentStart >= viewportChromStart) && (segmentEnd <= viewportChromEnd)) {
+                    //     const viewportOffsetEnd = viewportRawEventVecLen - (viewportChromEnd - segmentEnd);
+                    //     for (let i = viewportOffsetStart; i < viewportOffsetEnd; i++) {
+                    //       viewportRawEventVec[i] = 0;
+                    //     }
+                    //   }
+                    //   for (const mo of mos) {
+                    //     const offsets = mo.offsets;
+                    //     const probabilities = mo.probabilities;
+                    //     if ((eventCategories.includes('m6A+') && mo.unmodifiedBase === 'A')
+                    //       || (eventCategories.includes('m6A-') && mo.unmodifiedBase === 'T')
+                    //       || (eventCategories.includes('5mC') && mo.unmodifiedBase === 'C')) {
+                    //       for (let offsetIdx = 0; offsetIdx < offsets.length; offsetIdx++) {
+                    //         const offset = offsets[offsetIdx] - viewportOffsetStart;
+                    //         const probability = probabilities[offsetIdx];
+                    //         // ** do not filter on probability, to start; maybe change this later **
+                    //         if ((offset >= 0) && (offset < viewportRawEventVecLen)) {
+                    //           viewportRawEventVec[offset] = parseInt(probability);
+                    //         }
+                    //       }
+                    //     }
+                    //   }
+                    //   // viewportRawEventMatrix[allowedRowIdx] = viewportRawEventVec;
+                    //   if (integerBasesPerPixel > 1) {
+                    //     viewportAggregatedEventMatrix[allowedRowIdx] = movingMaxima(
+                    //       viewportRawEventVec,
+                    //       viewportRawEventVec.length,
+                    //       0,
+                    //       integerBasesPerPixel - 1,
+                    //       integerBasesPerPixel
+                    //     );
+                    //   }
+                    //   else {
+                    //     viewportAggregatedEventMatrix[allowedRowIdx] = viewportRawEventVec;
+                    //   }
+                    // }
                     allowedRowIdx++;
                   }
                   else if ((segmentStart >= chromStart) && (segmentEnd <= chromEnd)) {
@@ -4292,6 +5380,62 @@ const renderSegments = (
                     trueRow[allowedRowIdx] = i;
                     clusterMatrix[allowedRowIdx] = eventVec;
                     identifiersArray.push(segment.readName);
+
+                    // ** viewport event matrix **
+                    // note: partial overlap requires init to -255
+                    // if (viewportRawEventVecLen) {
+                    //   const viewportRawEventVec = new Array(viewportRawEventVecLen);
+                    //   for (let i = 0; i < viewportRawEventVecLen; i++) {
+                    //     viewportRawEventVec[i] = -255;
+                    //   }
+                    //   const viewportOffsetStart = viewportChromStart - segmentStart;
+                    //   // initialization is revised to 0 where there is fiber coverage
+                    //   if ((segmentStart < viewportChromStart) && (segmentEnd > viewportChromEnd)) {
+                    //     for (let i = 0; i < viewportRawEventVecLen; i++) {
+                    //       viewportRawEventVec[i] = 0;
+                    //     }
+                    //   }
+                    //   else if ((segmentStart >= viewportChromStart) && (segmentEnd > viewportChromEnd)) {
+                    //     for (let i = viewportOffsetStart; i < viewportRawEventVecLen; i++) {
+                    //       viewportRawEventVec[i] = 0;
+                    //     }
+                    //   }
+                    //   else if ((segmentStart >= viewportChromStart) && (segmentEnd <= viewportChromEnd)) {
+                    //     const viewportOffsetEnd = viewportRawEventVecLen - (viewportChromEnd - segmentEnd);
+                    //     for (let i = viewportOffsetStart; i < viewportOffsetEnd; i++) {
+                    //       viewportRawEventVec[i] = 0;
+                    //     }
+                    //   }
+                    //   for (const mo of mos) {
+                    //     const offsets = mo.offsets;
+                    //     const probabilities = mo.probabilities;
+                    //     if ((eventCategories.includes('m6A+') && mo.unmodifiedBase === 'A')
+                    //       || (eventCategories.includes('m6A-') && mo.unmodifiedBase === 'T')
+                    //       || (eventCategories.includes('5mC') && mo.unmodifiedBase === 'C')) {
+                    //       for (let offsetIdx = 0; offsetIdx < offsets.length; offsetIdx++) {
+                    //         const offset = offsets[offsetIdx] - viewportOffsetStart;
+                    //         const probability = probabilities[offsetIdx];
+                    //         // ** do not filter on probability, to start; maybe change this later **
+                    //         if ((offset >= 0) && (offset < viewportRawEventVecLen)) {
+                    //           viewportRawEventVec[offset] = parseInt(probability);
+                    //         }
+                    //       }
+                    //     }
+                    //   }
+                    //   // viewportRawEventMatrix[allowedRowIdx] = viewportRawEventVec;
+                    //   if (integerBasesPerPixel > 1) {
+                    //     viewportAggregatedEventMatrix[allowedRowIdx] = movingMaxima(
+                    //       viewportRawEventVec,
+                    //       viewportRawEventVec.length,
+                    //       0,
+                    //       integerBasesPerPixel - 1,
+                    //       integerBasesPerPixel
+                    //     );
+                    //   }
+                    //   else {
+                    //     viewportAggregatedEventMatrix[allowedRowIdx] = viewportRawEventVec;
+                    //   }
+                    // }
                     allowedRowIdx++;
                   }
                   else if ((segmentStart < chromStart) && (segmentEnd <= chromEnd) && (segmentEnd > chromStart)) {
@@ -4318,6 +5462,62 @@ const renderSegments = (
                     trueRow[allowedRowIdx] = i;
                     clusterMatrix[allowedRowIdx] = eventVec;
                     identifiersArray.push(segment.readName);
+
+                    // ** viewport event matrix **
+                    // note: partial overlap requires init to -255
+                    // if (viewportRawEventVecLen) {
+                    //   const viewportRawEventVec = new Array(viewportRawEventVecLen);
+                    //   for (let i = 0; i < viewportRawEventVecLen; i++) {
+                    //     viewportRawEventVec[i] = -255;
+                    //   }
+                    //   const viewportOffsetStart = viewportChromStart - segmentStart;
+                    //   // initialization is revised to 0 where there is fiber coverage
+                    //   if ((segmentStart < viewportChromStart) && (segmentEnd > viewportChromEnd)) {
+                    //     for (let i = 0; i < viewportRawEventVecLen; i++) {
+                    //       viewportRawEventVec[i] = 0;
+                    //     }
+                    //   }
+                    //   else if ((segmentStart >= viewportChromStart) && (segmentEnd > viewportChromEnd)) {
+                    //     for (let i = viewportOffsetStart; i < viewportRawEventVecLen; i++) {
+                    //       viewportRawEventVec[i] = 0;
+                    //     }
+                    //   }
+                    //   else if ((segmentStart >= viewportChromStart) && (segmentEnd <= viewportChromEnd)) {
+                    //     const viewportOffsetEnd = viewportRawEventVecLen - (viewportChromEnd - segmentEnd);
+                    //     for (let i = viewportOffsetStart; i < viewportOffsetEnd; i++) {
+                    //       viewportRawEventVec[i] = 0;
+                    //     }
+                    //   }
+                    //   for (const mo of mos) {
+                    //     const offsets = mo.offsets;
+                    //     const probabilities = mo.probabilities;
+                    //     if ((eventCategories.includes('m6A+') && mo.unmodifiedBase === 'A')
+                    //       || (eventCategories.includes('m6A-') && mo.unmodifiedBase === 'T')
+                    //       || (eventCategories.includes('5mC') && mo.unmodifiedBase === 'C')) {
+                    //       for (let offsetIdx = 0; offsetIdx < offsets.length; offsetIdx++) {
+                    //         const offset = offsets[offsetIdx] - viewportOffsetStart;
+                    //         const probability = probabilities[offsetIdx];
+                    //         // ** do not filter on probability, to start; maybe change this later **
+                    //         if ((offset >= 0) && (offset < viewportRawEventVecLen)) {
+                    //           viewportRawEventVec[offset] = parseInt(probability);
+                    //         }
+                    //       }
+                    //     }
+                    //   }
+                    //   // viewportRawEventMatrix[allowedRowIdx] = viewportRawEventVec;
+                    //   if (integerBasesPerPixel > 1) {
+                    //     viewportAggregatedEventMatrix[allowedRowIdx] = movingMaxima(
+                    //       viewportRawEventVec,
+                    //       viewportRawEventVec.length,
+                    //       0,
+                    //       integerBasesPerPixel - 1,
+                    //       integerBasesPerPixel
+                    //     );
+                    //   }
+                    //   else {
+                    //     viewportAggregatedEventMatrix[allowedRowIdx] = viewportRawEventVec;
+                    //   }
+                    // }
                     allowedRowIdx++;
                   }
                   else if ((segmentStart >= chromStart) && (segmentStart < chromEnd) && (segmentEnd > chromEnd)) {
@@ -4344,6 +5544,62 @@ const renderSegments = (
                     trueRow[allowedRowIdx] = i;
                     clusterMatrix[allowedRowIdx] = eventVec;
                     identifiersArray.push(segment.readName);
+
+                    // ** viewport event matrix **
+                    // note: partial overlap requires init to -255
+                    // if (viewportRawEventVecLen) {
+                    //   const viewportRawEventVec = new Array(viewportRawEventVecLen);
+                    //   for (let i = 0; i < viewportRawEventVecLen; i++) {
+                    //     viewportRawEventVec[i] = -255;
+                    //   }
+                    //   const viewportOffsetStart = viewportChromStart - segmentStart;
+                    //   // initialization is revised to 0 where there is fiber coverage
+                    //   if ((segmentStart < viewportChromStart) && (segmentEnd > viewportChromEnd)) {
+                    //     for (let i = 0; i < viewportRawEventVecLen; i++) {
+                    //       viewportRawEventVec[i] = 0;
+                    //     }
+                    //   }
+                    //   else if ((segmentStart >= viewportChromStart) && (segmentEnd > viewportChromEnd)) {
+                    //     for (let i = viewportOffsetStart; i < viewportRawEventVecLen; i++) {
+                    //       viewportRawEventVec[i] = 0;
+                    //     }
+                    //   }
+                    //   else if ((segmentStart >= viewportChromStart) && (segmentEnd <= viewportChromEnd)) {
+                    //     const viewportOffsetEnd = viewportRawEventVecLen - (viewportChromEnd - segmentEnd);
+                    //     for (let i = viewportOffsetStart; i < viewportOffsetEnd; i++) {
+                    //       viewportRawEventVec[i] = 0;
+                    //     }
+                    //   }
+                    //   for (const mo of mos) {
+                    //     const offsets = mo.offsets;
+                    //     const probabilities = mo.probabilities;
+                    //     if ((eventCategories.includes('m6A+') && mo.unmodifiedBase === 'A')
+                    //       || (eventCategories.includes('m6A-') && mo.unmodifiedBase === 'T')
+                    //       || (eventCategories.includes('5mC') && mo.unmodifiedBase === 'C')) {
+                    //       for (let offsetIdx = 0; offsetIdx < offsets.length; offsetIdx++) {
+                    //         const offset = offsets[offsetIdx] - viewportOffsetStart;
+                    //         const probability = probabilities[offsetIdx];
+                    //         // ** do not filter on probability, to start; maybe change this later **
+                    //         if ((offset >= 0) && (offset < viewportRawEventVecLen)) {
+                    //           viewportRawEventVec[offset] = parseInt(probability);
+                    //         }
+                    //       }
+                    //     }
+                    //   }
+                    //   // viewportRawEventMatrix[allowedRowIdx] = viewportRawEventVec;
+                    //   if (integerBasesPerPixel > 1) {
+                    //     viewportAggregatedEventMatrix[allowedRowIdx] = movingMaxima(
+                    //       viewportRawEventVec,
+                    //       viewportRawEventVec.length,
+                    //       0,
+                    //       integerBasesPerPixel - 1,
+                    //       integerBasesPerPixel
+                    //     );
+                    //   }
+                    //   else {
+                    //     viewportAggregatedEventMatrix[allowedRowIdx] = viewportRawEventVec;
+                    //   }
+                    // }
                     allowedRowIdx++;
                   }
                   break;
@@ -4379,6 +5635,7 @@ const renderSegments = (
 
       switch (method) {
         case 'AGNES':
+          // console.log(`clusterMatrix ${JSON.stringify(clusterMatrix)}`);
           const { clusters, distances, order, clustersGivenK } = clusterData({
             data: clusterMatrix,
             distance: distanceFnToCall,
@@ -4387,10 +5644,18 @@ const renderSegments = (
           const newickString = convertAgnesClusterResultsToNewickString(clusters);
           const phylotreeTree = new phylotree(newickString);
           const phylotreeTreeOrder = fibertreeViewPhylotreeBranchDataToOrderedList(phylotreeTree.nodes.data).reverse();
+          // let rowOrdering = order;
+          // if ((order.length === phylotreeTreeOrder.length) && (JSON.stringify(order.slice(0).sort((a, b) => a - b)) === JSON.stringify(phylotreeTreeOrder.slice(0).sort((a, b) => a - b)))) {
+          //   rowOrdering = phylotreeTreeOrder;
+          // }
           const rowOrdering = phylotreeTreeOrder;
           clusterResultsToExport = {
             clusters: clusters,
             order: rowOrdering,
+            // filteredEventClusterSignal: clusterMatrix,
+            // rawEventViewportSignal: viewportRawEventMatrix,
+            // reducedEventViewportSignal: viewportAggregatedEventMatrix,
+            // reducedEventPerVectorLength: viewportReducedEventVecLen,
             reducedEventViewportSignal: viewportAggregatedEventMatrix,
             newickString: newickString,
             identifiers: rowOrdering.map((i) => identifiersArray[i]),
@@ -4399,7 +5664,8 @@ const renderSegments = (
             const trueRowIdx = trueRow[i];
             const segment = segmentList[trueRowIdx];
             return [segment];
-          });
+          })
+          // console.log(`orderedSegments ${JSON.stringify(orderedSegments)}`);
           for (let key of Object.keys(grouped)) {
             const rows = orderedSegments;
             grouped[key] = {};
@@ -4429,12 +5695,17 @@ const renderSegments = (
             minimumPoints: minimumPoints,
             distanceFunction: distanceFnToCall,
           });
+          // console.log(`result ${JSON.stringify(result)}`);
           if (results.clusters.length > 0) {
             const order = flatten(results.clusters.concat(results.noise));
             const rowOrdering = order;
             clusterResultsToExport = {
               clusters: results,
               order: rowOrdering,
+              // rawClusterSignal: clusterMatrix,
+              // rawEventViewportSignal: viewportRawEventMatrix,
+              // reducedEventViewportSignal: viewportAggregatedEventMatrix,
+              // reducedEventPerVectorLength: viewportReducedEventVecLen,
               reducedEventViewportSignal: viewportAggregatedEventMatrix,
               newickString: null,
               identifiers: rowOrdering.map((i) => identifiersArray[i]),
@@ -4477,28 +5748,54 @@ const renderSegments = (
     // data.length = 0;
   }
   else if (fireIdentifierDataObj && (trackOptions.fire || trackOptions.ftFire)) {
+    // console.log(`fireIdentifierDataObj ${JSON.stringify(fireIdentifierDataObj)}`);
     for (let key of Object.keys(grouped)) {
       const rows = segmentsToRows(grouped[key], {
         prevRows: (prevRows[key] && prevRows[key].rows) || [],
         readNamesToFilterOn: fireIdentifierDataObj.identifiers || [],
+        // maxRows: (trackOptions.methylation && trackOptions.methylation.maxRows) ? trackOptions.methylation.maxRows : null,
       });
+      // console.log(`uid ${uid} | rows ${JSON.stringify(rows)}`);
       // At this point grouped[key] also contains all the segments (as array), but we only need grouped[key].rows
       // Therefore we get rid of everything else to save memory and increase performance
       grouped[key] = {};
+      // if (trackOptions.methylation && trackOptions.methylation.maxRows) {
+      //   grouped[key].rows = rows.slice(0, trackOptions.methylation.maxRows);
+      // }
+      // else {
+      //   grouped[key].rows = rows;
+      // }
       grouped[key].rows = rows;
+      // console.log(`uid ${uid} | rows ${JSON.stringify(grouped[key].rows)}`);
     }
   }
   else {
     for (let key of Object.keys(grouped)) {
       const rows = segmentsToRows(grouped[key], {
         prevRows: (prevRows[key] && prevRows[key].rows) || [],
+        // maxRows: (trackOptions.methylation && trackOptions.methylation.maxRows) ? trackOptions.methylation.maxRows : null,
       });
+      // console.log(`uid ${uid} | rows ${JSON.stringify(rows)}`);
       // At this point grouped[key] also contains all the segments (as array), but we only need grouped[key].rows
       // Therefore we get rid of everything else to save memory and increase performance
       grouped[key] = {};
+      // if (trackOptions.methylation && trackOptions.methylation.maxRows) {
+      //   grouped[key].rows = rows.slice(0, trackOptions.methylation.maxRows);
+      // }
+      // else {
+      //   grouped[key].rows = rows;
+      // }
       grouped[key].rows = rows;
+      // if (trackOptions.methylation) {
+      //   console.log(`uid ${uid} | rows ${JSON.stringify(grouped[key].rows)}`);
+      // }
     }
   }
+
+  // if (trackOptions.fire) {
+  //   console.log(`grouped | B1 | ${JSON.stringify(segmentList)}`);
+  //   console.log(`grouped | B2 | ${JSON.stringify(grouped)}`);
+  // }
 
   // calculate the height of each group
   const totalRows = Object.values(grouped)
@@ -4608,11 +5905,7 @@ const renderSegments = (
       Math.floor((maxPos - minPos) / maxCoverageSamples),
       1,
     );
-    const result = getCoverage(
-      uid,
-      segmentList.filter((x) => x.in_bounds),
-      coverageSamplingDistance,
-    );
+    const result = getCoverage(uid, segmentList, coverageSamplingDistance);
 
     allReadCounts = result.coverage;
     const maxReadCount = result.maxCoverage;
@@ -4685,20 +5978,33 @@ const renderSegments = (
         const from = xScale(segment.from);
         const to = xScale(segment.to);
 
-          xLeft = from;
-          xRight = to;
+        xLeft = from;
+        xRight = to;
 
         if (trackOptions && trackOptions.methylation) {
+          // if (trackOptions.methylation) console.log(`trackOptions.methylation ${JSON.stringify(trackOptions.methylation)} | segment.colorOverride ${segment.colorOverride} | segment.color ${segment.color}`);
+          // if (trackOptions.fire) console.log(`trackOptions.fire ${JSON.stringify(trackOptions.fire)} | segment.colorOverride ${segment.colorOverride} | segment.color ${segment.color}`);
           addRect(xLeft, yTop, xRight - xLeft, height, segment.colorOverride || segment.color);
+          // drawnSegmentIdentifiers[originatingTrackId].methylation.push(segment.readName);
+          // pileupSegmentsDrawn += 1;
         }
         else if (trackOptions && trackOptions.indexDHS) {
+          // console.log(`PILEUP_COLOR_IXS.INDEX_DHS_BG ${PILEUP_COLOR_IXS.INDEX_DHS_BG} vs segment.color ${segment.color} or segment.colorOverride ${segment.colorOverride}`);
           addRect(xLeft, yTop, xRight - xLeft, height, PILEUP_COLOR_IXS.INDEX_DHS_BG);
         }
         else if (trackOptions && trackOptions.tfbs) {
           addRect(xLeft, yTop + (height * 0.125), xRight - xLeft, height * 0.75, PILEUP_COLOR_IXS.TFBS_SEGMENT_BG);
         }
         else if (trackOptions && trackOptions.genericBed) {
-          addRect(xLeft, yTop + (height * 0.125), xRight - xLeft, height * 0.75, PILEUP_COLOR_IXS.GENERIC_BED_SEGMENT_BG);
+          let colorIdx = PILEUP_COLOR_IXS.GENERIC_BED_SEGMENT_BG;
+          // if (trackOptions.genericBed.colors) {
+          //   const colorRgb = trackOptions.genericBed.colors[0];
+          //   console.log(`colorRgb ${colorRgb}`);
+          //   console.log(`PILEUP_COLOR_IXS ${JSON.stringify(PILEUP_COLOR_IXS)}`);
+          //   colorIdx = PILEUP_COLOR_IXS[`GENERIC_BED_${colorRgb}`];
+          //   console.log(`colorIdx ${colorIdx}`);
+          // }
+          addRect(xLeft, yTop + (height * 0.125), xRight - xLeft, height * 0.75, colorIdx);
         }
         // else if (trackOptions && trackOptions.fire) {
         //   addRect(xLeft, yTop, xRight - xLeft, height, PILEUP_COLOR_IXS.FIRE_SEGMENT_BG);
@@ -4781,11 +6087,18 @@ const renderSegments = (
             if (mmSegmentColor) {
               if ((mo.code === 'a') && ('M0A' in highlightPositions)) {
                 const segmentModifiedOffsets = new Set(offsets.filter((d, i) => probabilities[i] < minProbabilityThreshold).map(d => d + segment.from));
+                // console.log(`segmentModifiedOffsets ${JSON.stringify(segmentModifiedOffsets)}`);
+                // const segmentModifiedOffsetMin = Math.min(...segmentModifiedOffsets);
+                // const segmentModifiedOffsetMax = Math.max(...segmentModifiedOffsets);
                 const highlight = 'M0A';
                 const highlightLen = 1;
                 const highlightWidth = Math.max(1, xScale(highlightLen) - xScale(0));
                 const highlightColor = PILEUP_COLOR_IXS.HIGHLIGHTS_MZEROA;
+                // console.log(`highlightColor ${highlightColor}`);
+                // const highlightPosns = highlightPositions[highlight].filter(d => !segmentModifiedOffsets.includes(d));
                 const highlightPosns = [...ATPositions].filter(d => !segmentModifiedOffsets.has(d));
+                // console.log(`highlightPositions[highlight] ${highlightPositions[highlight].length}`);
+                // console.log(`highlightPosns ${highlightPosns.length}`);
                 for (const highlightPosn of highlightPosns) {
                   if ((highlightPosn >= segment.from) && (highlightPosn <= segment.to)) {
                     xLeft = xScale(highlightPosn);
@@ -4794,12 +6107,47 @@ const renderSegments = (
                   }
                 }
               }
+              // let offsetIdx = 0;
+              // const width = 1;
+              // for (const offset of offsets) {
+              //   const probability = probabilities[offsetIdx];
+              //   if (probability >= minProbabilityThreshold && probability < maxProbabilityThreshold) {
+              //     // console.log(`segment.from + offset -> | ${segment.from} | ${offset} | ${segment.from + offset}`);
+              //     xLeft = xScale(segment.from + offset); // 'from' uses 1-based index
+              //     // const width = Math.max(1, xScale(offsetLength) - xScale(0));
+              //     // xRight = xLeft + width;
+              //     addRect(xLeft, yTop, width, height, mmSegmentColor);
+              //   }
+              //   offsetIdx++;
+              // }
+
+              // const offsetWidth = 1;
+              // const filteredOffsets = offsets.filter((d, i) => probabilities[i] >= minProbabilityThreshold && probabilities[i] < maxProbabilityThreshold);
+              // for (const filteredOffset of filteredOffsets) {
+              //   xLeft = xScale(segment.from + filteredOffset);
+              //   addRect(xLeft, yTop, offsetWidth, height, mmSegmentColor);
+              // }
+
+              // const offsetWidth = 1;
+              // offsets
+              //   .filter((d, i) => probabilities[i] >= minProbabilityThreshold && probabilities[i] < maxProbabilityThreshold)
+              //   .map(filteredOffset => {
+              //     xLeft = xScale(segment.from + filteredOffset);
+              //     addRect(xLeft, yTop, offsetWidth, height, mmSegmentColor);
+              //   })
 
               const width = Math.max(1, xScale(offsetLength) - xScale(0));
               offsets
                 .filter((d, i) => probabilities[i] >= minProbabilityThreshold && probabilities[i] < maxProbabilityThreshold)
                 .map(filteredOffset => {
+                  // if (mmSegmentColor === PILEUP_COLOR_IXS.MM_M5C_FOR) {
+                  //   console.log(`segment.from + filteredOffset - chrOffset ${segment.from + filteredOffset - segment.chrOffset} | filteredOffset ${filteredOffset} | segment.from ${segment.from} | segment.chrOffset ${segment.chrOffset}`);
+                  // }
                   xLeft = xScale(segment.from + filteredOffset);
+                  // if ((mmSegmentColor === PILEUP_COLOR_IXS.MM_M5C_FOR) && trackOptions.methylation.alignCpGEvents && segment.strand === '-') {
+                    // console.log(`segment.from + filteredOffset - chrOffset ${segment.from + filteredOffset - segment.chrOffset} | filteredOffset ${filteredOffset} | segment.from ${segment.from} | segment.chrOffset ${segment.chrOffset} | segment.strand ${segment.strand}`);
+                  //   xLeft -= width;
+                  // }
                   xRight = xLeft + width;
                   addRect(xLeft, yTop, width, height, mmSegmentColor);
                 });
@@ -4808,11 +6156,61 @@ const renderSegments = (
         }
 
         else if (trackOptions && trackOptions.indexDHS) {
+          // console.log(`segment ${JSON.stringify(segment, null, 2)}`);
+          //
+          // apply color to segment, if available
+          //
           const indexDHSMetadata = (trackOptions.indexDHS) ? segment.metadata : {};
           let defaultSegmentColor = PILEUP_COLOR_IXS.BLACK;
           if (trackOptions.indexDHS) {
             defaultSegmentColor = PILEUP_COLOR_IXS[`INDEX_DHS_${indexDHSMetadata.rgb}`];
+            // if ('M0A' in highlightPositions) defaultSegmentColor += 1;
+            // console.log(`indexDHSMetadata ${JSON.stringify(indexDHSMetadata)}`);
           }
+          // if (segment.substitutions.length === 1) {
+          //   const newSubstitutions = [];
+          //   let offset = 0;
+          //   let length = 1;
+          //   let rangeStart = segment.start;
+          //   let rangeEnd = segment.start + 1;
+          //   newSubstitutions.push({
+          //     pos: offset,
+          //     length: length,
+          //     range: [
+          //       rangeStart,
+          //       rangeEnd,
+          //     ],
+          //     type: 'M',
+          //   });
+          //   offset += length;
+          //   length = segment.to - segment.from - offset - 1;
+          //   rangeStart = rangeEnd;
+          //   rangeEnd = rangeStart + length;
+          //   newSubstitutions.push({
+          //     pos: 1,
+          //     length: length,
+          //     range: [
+          //       rangeStart,
+          //       rangeEnd,
+          //     ],
+          //     type: 'N',
+          //   });
+          //   offset += length;
+          //   length = 1;
+          //   rangeStart = rangeEnd;
+          //   rangeEnd = rangeStart + 1;
+          //   newSubstitutions.push({
+          //     pos: offset,
+          //     length: length,
+          //     range: [
+          //       rangeStart,
+          //       rangeEnd,
+          //     ],
+          //     type: 'M',
+          //   });
+          //   segment.substitutions = newSubstitutions;
+          // }
+          // const width = 1;
           for (const substitution of segment.substitutions) {
             xLeft = xScale(segment.from + substitution.pos);
             const width = Math.max(1, xScale(substitution.length) - xScale(0));
@@ -4869,6 +6267,41 @@ const renderSegments = (
                 delWidth,
                 defaultSegmentColor,
               );
+
+              // addRect(
+              //   xLeft,
+              //   yTop,
+              //   xRight - xLeft,
+              //   yMidTop - yTop,
+              //   PILEUP_COLOR_IXS.N,
+              // );
+              // addRect(
+              //   xLeft,
+              //   yMidBottom,
+              //   width,
+              //   yBottom - yMidBottom,
+              //   PILEUP_COLOR_IXS.N,
+              // );
+
+              // let currPos = xLeft;
+              // const DASH_LENGTH = 6;
+              // const DASH_SPACE = 4;
+
+              // draw dashes
+              // while (currPos <= xRight) {
+              //   // make sure the last dash doesn't overrun
+              //   const dashLength = Math.min(DASH_LENGTH, xRight - currPos);
+
+              //   addRect(
+              //     currPos,
+              //     yMidTop,
+              //     dashLength,
+              //     delWidth,
+              //     PILEUP_COLOR_IXS.N,
+              //   );
+              //   currPos += DASH_LENGTH + DASH_SPACE;
+              // }
+              // allready handled above
             }
             else {
               const indexDHSElementHeight = yScale.bandwidth() * 0.5;
@@ -4879,16 +6312,20 @@ const renderSegments = (
           //
           // draw Index DHS summit
           //
-          const indexDHSElementStart = segment.from - segment.chrOffset;
-          const indexDHSSummitStart = indexDHSMetadata.summit.start;
-          const indexDHSSummitEnd = indexDHSMetadata.summit.end;
-          const indexDHSSummitLength = indexDHSSummitEnd - indexDHSSummitStart;
-          const indexDHSSummitPos = indexDHSSummitStart - indexDHSElementStart;
-          const indexDHSXLeft = xScale(segment.from + indexDHSSummitPos);
-          const indexDHSYTop = yTop;
-          const indexDHSWidth = Math.max(1, xScale(indexDHSSummitLength) - xScale(0));
-          const indexDHSHeight = height;
-          addRect(indexDHSXLeft, indexDHSYTop, indexDHSWidth, indexDHSHeight, defaultSegmentColor);
+          // if (trackOptions && trackOptions.indexDHS) {
+            // console.log(`PILEUP_COLOR_IXS ${JSON.stringify(PILEUP_COLOR_IXS)}`);
+            const indexDHSElementStart = segment.from - segment.chrOffset;
+            const indexDHSSummitStart = indexDHSMetadata.summit.start;
+            const indexDHSSummitEnd = indexDHSMetadata.summit.end;
+            const indexDHSSummitLength = indexDHSSummitEnd - indexDHSSummitStart;
+            const indexDHSSummitPos = indexDHSSummitStart - indexDHSElementStart;
+            const indexDHSXLeft = xScale(segment.from + indexDHSSummitPos);
+            const indexDHSYTop = yTop;
+            const indexDHSWidth = Math.max(1, xScale(indexDHSSummitLength) - xScale(0));
+            const indexDHSHeight = height;
+            // const indexDHSXRight = indexDHSXLeft + indexDHSWidth;
+            addRect(indexDHSXLeft, indexDHSYTop, indexDHSWidth, indexDHSHeight, defaultSegmentColor);
+          // }
         }
 
         else if (trackOptions && trackOptions.ftFire) {
@@ -4928,6 +6365,24 @@ const renderSegments = (
               nucleosomeOffsets = nucleosomeOffsets.map((d,i) => {
                 return d - nucleosomeOffsetModifiers[nucleosomeOffsetModifiers.length - i - 1] - nucleosomeClipLength + 1;
               });
+              // nucleosomeLengths = nucleosomeLengths.map((d,i) => {
+              //   return d;
+              // });
+            }
+
+            // if (segment.readName === '06318b68-46f6-4aa3-a5b3-8b7bad735eb8') {
+            if (segment.readName === '06318b68-46f6-4aa3-a5b3-8b7bad735eb8') {
+              console.log(`segment.start ${segment.start} | segment.length ${segment.length} | segment.strand ${segment.strand}`);
+              // console.log(`segment.as ${segment.as} | segment.al ${segment.al} | segment.aq ${segment.aq}`);
+              // console.log(`segment.mspOffsets | ${JSON.stringify(segment.mspOffsets)}`);
+              console.log(`segment.ns ${segment.ns}`); 
+              console.log(`segment.nl ${segment.nl}`);
+              // console.log(`segment.nucOffsets | ${JSON.stringify(segment.nucOffsets)}`);
+              console.log(`nucleosomeOffsets | ${JSON.stringify(nucleosomeOffsets)}`);
+              console.log(`nucleosomeLengths | ${JSON.stringify(nucleosomeLengths)}`);
+              console.log(`nucleosomeOffsetModifiers | ${JSON.stringify(nucleosomeOffsetModifiers)}`);
+              console.log(`ftFireMetadata ${JSON.stringify(ftFireMetadata)}`);
+              console.log(`moleculeXLeft ${moleculeXLeft}, moleculeYTop ${moleculeYTop}, moleculeWidth ${moleculeWidth}, moleculeColorIdx ${moleculeColorIdx}`);
             }
 
             /** draw nucleosomes */
@@ -4945,35 +6400,46 @@ const renderSegments = (
               addRect(nucleosomeXLeft, nucleosomeYTop, nucleosomeWidth, ftFireElementHeight * nucleosomeHeightFactor, nucleosomeColorIdx);
             }
             /** draw MSPs */
-            for (let i = 0; i < mspOffsets.length; ++i) {
-              const mspOffset = mspOffsets[i];
-              const mspLength = mspLengths[i];
-              const mspColor = mspColors[i];
-              const mspColorIdx = PILEUP_COLOR_IXS[`FIRE_${mspColor}`];
-              const mspHeightFactor = ftFireColors[mspColor].heightFactor;
-              const mspWidth = Math.max(1, xScale(mspLength) - xScale(0));
-              const mspXLeft = xScale(segment.from + mspOffset);
-              const mspYTop = yTop + ((yBottom - yTop) * (1 - (0.125 * mspHeightFactor))) - topCorrection;
-              addRect(mspXLeft, mspYTop, mspWidth, ftFireElementHeight * mspHeightFactor, mspColorIdx);
-            }
+            // for (let i = 0; i < mspOffsets.length; ++i) {
+            //   const mspOffset = mspOffsets[i];
+            //   const mspLength = mspLengths[i];
+            //   const mspColor = mspColors[i];
+            //   const mspColorIdx = PILEUP_COLOR_IXS[`FIRE_${mspColor}`];
+            //   const mspHeightFactor = ftFireColors[mspColor].heightFactor;
+            //   const mspWidth = Math.max(1, xScale(mspLength) - xScale(0));
+            //   const mspXLeft = xScale(segment.from + mspOffset);
+            //   const mspYTop = yTop + ((yBottom - yTop) * (1 - (0.125 * mspHeightFactor))) - topCorrection;
+            //   addRect(mspXLeft, mspYTop, mspWidth, ftFireElementHeight * mspHeightFactor, mspColorIdx);
+            // }
           }
         }
 
         else if (trackOptions && trackOptions.fire) {
+          // let showDims = true;
           const fireMetadata = (trackOptions.fire && trackOptions.fire.metadata) ? segment.metadata : {};
           const fireEnabledCategories = (trackOptions.fire && trackOptions.fire.enabledCategories) ? trackOptions.fire.enabledCategories : [];
+          // console.log(`trackOptions.fire ${JSON.stringify(trackOptions.fire)}`);
+          // console.log(`fireEnabledCategories ${JSON.stringify(fireEnabledCategories)}`);
+          // fireMetadata.defaultRGB = '169,169,169';
+          // console.log(`PILEUP_COLOR_IXS ${JSON.stringify(PILEUP_COLOR_IXS)}`);
           let defaultSegmentColor = PILEUP_COLOR_IXS.FIRE_BG;
+          // let defaultSegmentColor = PILEUP_COLOR_IXS[`FIRE_${fireMetadata.defaultRGB}`];
           const fireElementHeight = yScale.bandwidth() * 0.25;
           const topCorrection = fireElementHeight * 1.75;
 
           // console.log(`segment.metadata.colors ${JSON.stringify(segment.metadata.colors)}`);
 
           for (const substitution of segment.substitutions) {
+            // console.log(`segment.from + substitution.pos ${segment.from} + ${substitution.pos} | substitution.length ${substitution.length}`);
             xLeft = xScale(segment.from + substitution.pos);
             const width = Math.max(1, xScale(substitution.length) - xScale(0));
+            // const insertionWidth = Math.max(1, xScale(0.1) - xScale(0));
             xRight = xLeft + width;
             const fireYTop = yTop + ((yBottom - yTop) * 0.5) - topCorrection;
+            // console.log(`xLeft ${xLeft} | width ${width} | fireYTop ${fireYTop}`);
             addRect(xLeft, fireYTop, width, fireElementHeight, defaultSegmentColor);
+
+            // console.log(`xLeft ${xLeft} | fireYTop ${fireYTop} | width ${width} | fireElementHeight ${fireElementHeight} | defaultSegmentColor ${defaultSegmentColor}`);
 
             const colorMap = segment.metadata.colors;
 
@@ -4983,6 +6449,11 @@ const renderSegments = (
             const blockColors = blocks.colors.map((d => colorMap[d]));
             const blockColorIdxs = blocks.colors.map(d => PILEUP_COLOR_IXS[`FIRE_${colorMap[d]}`]);
             const blockHeightFactors = blocks.colors.map(d => trackOptions.fire.metadata.itemRGBMap[colorMap[d]].heightFactor);
+
+            // console.log(`blocks ${JSON.stringify(blocks)}`);
+            // console.log(`colorMap ${JSON.stringify(colorMap)}`);
+            // console.log(`blockColors ${JSON.stringify(blockColors)}`);
+            // console.log(`fireEnabledCategories ${JSON.stringify(fireEnabledCategories)}`);
 
             for (let i = 0; i < blocks.count; i++) {
               const blockColorRgb = blockColors[i];
@@ -4994,12 +6465,15 @@ const renderSegments = (
                 const blockXLeft = xScale(segment.from + blockOffset);
                 const blockYTop = yTop + ((yBottom - yTop) * (1 - (0.125 * blockHeightFactors[i]))) - topCorrection;
                 addRect(blockXLeft, blockYTop, blockWidth, fireElementHeight * blockHeightFactors[i], blockColorIdx);
+                // console.log(`blockXLeft ${blockXLeft} | blockYTop ${blockYTop} | blockWidth ${blockWidth} | fireElementHeight ${fireElementHeight} | blockColorIdx ${blockColorIdx}`);
               }
             }
           }
         }
       });
     });
+
+    // console.log(`pileupSegmentsDrawn ${pileupSegmentsDrawn}`);
   }
 
   const positionsBuffer = allPositions.slice(0, currPosition).buffer;
