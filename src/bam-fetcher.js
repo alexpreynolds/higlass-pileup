@@ -36,6 +36,8 @@ class BAMDataFetcher {
           this.uid,
           dataConfig.bamUrl,
           dataConfig.baiUrl,
+          dataConfig.fastaUrl,
+          dataConfig.faiUrl,
           dataConfig.chromSizesUrl,
           dataConfig.options,
           trackOptions,

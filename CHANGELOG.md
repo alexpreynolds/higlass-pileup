@@ -1,3 +1,9 @@
+TBD
+
+- Updated webpack and Babel configurations to support inclusion of newer @gmod/bam-js
+- Inclusion of current `@gmod/bam-js` (v5) which adds faster BAM parsing and support for case-sensitive tags
+- Added `methylation`, `fire`, `indexDHS` specialized pileup track subtypes (related to base modification and regulatory elements)
+
 v1.5.0
 
 - Update dependencies
