@@ -66,6 +66,12 @@ const libraryConfig = {
     devMiddleware: {
       writeToDisk: true,
     },
+    client: {
+      overlay: {
+        warnings: false,
+        errors: false,
+      },
+    },
   },
   optimization: {
     minimizer: [

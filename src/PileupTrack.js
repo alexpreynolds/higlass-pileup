@@ -1778,52 +1778,6 @@ varying vec4 vColor;
                     output += `</div>`;
 
                     return output;
-
-                    // const insertSizeHtml = this.getInsertSizeMouseoverHtml(
-                    //   read,
-                    // );
-                    // const chimericReadHtml =
-                    //   read.mate_ids.length > 1
-                    //     ? `<span style="color:red;">Chimeric alignment</span><br>`
-                    //     : ``;
-
-                    // let mappingOrientationHtml = ``;
-                    // if (read.mappingOrientation) {
-                    //   let style = ``;
-                    //   if (read.colorOverride) {
-                    //     const color = Object.keys(PILEUP_COLORS)[
-                    //       read.colorOverride
-                    //     ];
-                    //     const htmlColor = this.colorArrayToString(
-                    //       PILEUP_COLORS[color],
-                    //     );
-                    //     style = `style="color:${htmlColor};"`;
-                    //   }
-                    //   mappingOrientationHtml = `<span ${style}> Mapping orientation: ${read.mappingOrientation}</span><br>`;
-                    // }
-
-                    // let mouseOverHtml =
-                    //   `ID: ${read.id}<br>` +
-                    //   `Position: ${read.chrName}:${
-                    //     read.from - read.chrOffset
-                    //   }<br>` +
-                    //   `Read length: ${read.to - read.from}<br>` +
-                    //   `MAPQ: ${read.mapq}<br>` +
-                    //   `Strand: ${read.strand}<br>` +
-                    //   insertSizeHtml +
-                    //   chimericReadHtml +
-                    //   mappingOrientationHtml;
-
-                    // if (nearestSub && nearestSub.type) {
-                    //   mouseOverHtml += `Nearest substitution: ${cigarTypeToText(
-                    //     nearestSub.type,
-                    //   )} (${nearestSub.length})`;
-                    // } else if (nearestSub && nearestSub.variant) {
-                    //   mouseOverHtml += `Nearest substitution: ${nearestSub.base} &rarr; ${nearestSub.variant}`;
-                    // }
-
-                    // return mouseOverHtml;
-                    // // + `CIGAR: ${read.cigar || ''} MD: ${read.md || ''}`);
                   }
                 }
               }
