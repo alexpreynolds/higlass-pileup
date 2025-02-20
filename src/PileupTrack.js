@@ -61,19 +61,19 @@ function calcSubDistance(mousePos, read, sub) {
   return subDistance;
 }
 
-/** Find the thearest substition to the mouse position */
+/** Find the nearest substition to the mouse position */
 function findNearestSub(mousePos, read, nearestDistance) {
   const subs = read.substitutions;
   let nearestSub = null;
   let nearestSubDistance = Number.MAX_VALUE;
 
-  for (const sub of subs) {
+  subs.forEach((sub) => {
     const subDistance = calcSubDistance(mousePos, read, sub);
     if (subDistance < nearestSubDistance) {
       nearestSub = sub;
       nearestSubDistance = subDistance;
     }
-  }
+  });
 
   if (nearestSubDistance < nearestDistance) {
     return nearestSub;
@@ -160,7 +160,7 @@ function eqSet(as, bs) {
 }
 
 function all(pred, as) {
-  for (var a of as) if (!pred(a)) return false;
+  for (const a of as) if (!pred(a)) return false;
   return true;
 }
 
@@ -459,13 +459,13 @@ varying vec4 vColor;
               this.prevOptions = Object.assign({}, this.options);
             }
             else {
-              for (const key in this.prevRows) {
-                for (const row of this.prevRows[key].rows) {
-                  for (const segment of row) {
+              this.prevRows.forEach((key) => {
+                this.prevRows[key].rows.forEach((row) => {
+                  row.forEach((segment) => {
                     segment.methylationOffsets = [];
-                  }
-                }
-              }
+                  });
+                });
+              });
               this.prevRows = [];
               this.removeTiles(Object.keys(this.fetchedTiles));
               this.fetching.clear();
@@ -1393,13 +1393,13 @@ varying vec4 vColor;
       let blockCount = 0;
       let blockStarts = [];
       let blockSizes = [];
-      for (const sub of subs) {
+      subs.forEach((sub) => {
         if (sub.type === 'M') {
           blockCount++;
           blockStarts.push(sub.pos);
           blockSizes.push(sub.length);
         }
-      }
+      });
       if (blockCount > 0) {
         elementCartoon += `<svg width="${elementCartoonWidth}" height="${elementCartoonHeight}">
           <style type="text/css">
@@ -1521,7 +1521,7 @@ varying vec4 vColor;
       let bandCoverageEnd = Number.MAX_SAFE_INTEGER;
 
       if (this.yScaleBands) {
-        for (const key of Object.keys(this.yScaleBands)) {
+        Object.keys(this.yScaleBands).forEach((key) => {
           const yScaleBand = this.yScaleBands[key];
 
           const [start, end] = yScaleBand.range();
@@ -1536,8 +1536,8 @@ varying vec4 vColor;
             if (index >= 0 && index < rows.length) {
               const row = rows[index];
 
-              for (const section of row) {
-                for (const read of section.segments) {
+              row.forEach((section) => {
+                section.segments.forEach((read) => {
                   const readTrackFrom = this._xScale(read.from);
                   const readTrackTo = this._xScale(read.to);
 
@@ -1594,9 +1594,9 @@ varying vec4 vColor;
                       position = Math.ceil(atcX[1]);
                       positionText = `${chrom}:${position}`;
                       const methylationOffset = position - (read.from - read.chrOffset);
-                      for (const mo of read.methylationOffsets) {
+                      read.methylationOffsets.forEach((mo) => {
                         const moQuery = mo.offsets.indexOf(methylationOffset);
-                        // if (eventText && eventProbability) break;
+                        // if (eventText && eventProbability) return;
                         if (moQuery !== -1) {
                           const candidateEventProbability = parseInt(mo.probabilities[moQuery]);
                           if (eventProbability && eventProbability < candidateEventProbability) {
@@ -1610,7 +1610,7 @@ varying vec4 vColor;
                             }
                           }
                         }
-                      }
+                      });
                     }
 
                     let output = `<div class="track-mouseover-menu-table">`;
@@ -1779,11 +1779,11 @@ varying vec4 vColor;
 
                     return output;
                   }
-                }
-              }
+                });
+              });
             }
           }
-        }
+        });
 
         // var val = self.yScale.domain()[index];
         if (
@@ -1807,7 +1807,7 @@ varying vec4 vColor;
               )}%)<br>` +
               range;
 
-            for (let variant of Object.keys(readCount.variants)) {
+            Object.keys(readCount.variants).forEach((variant) => {
               if (readCount.variants[variant] > 0) {
                 const variantPercent =
                   (readCount.variants[variant] / readCount.reads) * 100;
@@ -1815,7 +1815,7 @@ varying vec4 vColor;
                   readCount.variants[variant]
                 } (${variantPercent.toFixed(2)}%)<br>`;
               }
-            }
+            });
 
             return mouseOverHtml;
           }
@@ -1899,7 +1899,7 @@ varying vec4 vColor;
         this._xScale,
       );
 
-      for (const tile of tiles) {
+      tiles.forEach((tile) => {
         const { tileX, tileWidth } = getTilePosAndDimensions(
           tile[0],
           [tile[1]],
@@ -1960,7 +1960,7 @@ varying vec4 vColor;
         this.pBorder.clear();
         this.drawError();
         this.animate();
-      }
+      });
       // const { tileX, tileWidth } = getTilePosAndDimensions(
       //   this.calculateZoomLevel(),
       // )
