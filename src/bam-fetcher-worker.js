@@ -18,11 +18,11 @@ import {
 import LRU from 'lru-cache';
 import { PILEUP_COLOR_IXS, replaceColorIdxs, appendColorIdxs } from './bam-utils';
 import { parseChromsizesRows, ChromosomeInfo } from './chrominfo-utils';
-import { clusterData, euclideanDistance, jaccardDistance, averageDistance } from 'apr144-hclust';
+import { clusterData, euclideanDistance, jaccardDistance, averageDistance } from '@apr144/hclust';
 import { RemoteFile } from 'generic-filehandle';
 import { phylotree } from "phylotree";
 
-const dbscan = require('apr144-dbscan');
+const dbscan = require('@apr144/dbscan');
 
 function convertAgnesClusterResultsToNewickString(agnesClusterResults) {
   const hclustToNewick = (node, suffix) => {
@@ -521,7 +521,7 @@ const init = (uid, bamUrl, baiUrl, fastaUrl, faiUrl, chromSizesUrl, options, tOp
     // console.log(`setting up fasta | ${fastaUrl} | ${faiUrl}`);
     const remoteFasta = new RemoteFile(fastaUrl);
     const remoteFai = new RemoteFile(faiUrl);
-    const { IndexedFasta } = require('apr144-indexedfasta');
+    const { IndexedFasta } = require('@apr144/indexedfasta');
     sequenceFiles[fastaUrl] = new IndexedFasta({
       fasta: remoteFasta,
       fai: remoteFai,

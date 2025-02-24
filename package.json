@@ -1,6 +1,6 @@
 {
   "name": "@apr144/higlass-pileup",
-  "version": "1.5.1-020925-001",
+  "version": "1.5.1-022325-001",
   "description": "HiGlass Pileup Track",
   "keywords": [
     "HiGlass",
@@ -64,10 +64,10 @@
     "reinstall": "npm run clean && npm install"
   },
   "dependencies": {
+    "@apr144/dbscan": "^1.1.1",
+    "@apr144/hclust": "^0.0.1",
+    "@apr144/indexedfasta": "^2.1.0",
     "@gmod/bam": "^5.0.1",
-    "apr144-dbscan": "1.1.1-51524",
-    "apr144-hclust": "^0.0.1",
-    "apr144-indexedfasta": "^2.1.0",
     "buffer": "^6.0.3",
     "d3-array": "^2.3.1",
     "d3-dsv": "^1.1.1",
@@ -83,12 +83,8 @@
   },
   "comments": {
     "dependencies": {
-      "apr144-bam": "2.0.2-rs-053124-020",
       "@gmod/indexedfasta": "^2.1.0 | file:../indexedfasta-js",
-      "@greenelab/hclust": "git+https://alexpreynolds@github.com/alexpreynolds/hclust.git#methylation",
-      "apr144-hclust": "^0.0.1",
-      "apr144-indexedfasta": "^2.1.0",
-      "apr144-hdbscanjs": "^1.0.12-52124"
+      "@greenelab/hclust": "git+https://alexpreynolds@github.com/alexpreynolds/hclust.git#methylation"
     }
   }
 }

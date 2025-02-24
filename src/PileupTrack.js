@@ -599,7 +599,7 @@ varying vec4 vColor;
             // if (this.options.fire) console.log(`this.sessionId | ${JSON.stringify(this.sessionId)}`);
             // if (this.options.fire) console.log(`this.id | ${JSON.stringify(this.id)}`);
             // if (this.options.fire) console.log(`refresh-fire-layout | ${this.id} | ${this.sessionId}`);
-            if (!this.options.fire || !this.options.ftFire || this.trackUpdatesAreFrozen)
+            if (!this.options.fire || this.trackUpdatesAreFrozen)
               break;
             if (data.sid !== this.sessionId)
               break;
@@ -625,9 +625,10 @@ varying vec4 vColor;
             this.prevOptions = Object.assign({}, this.options);
             break;
           case "refresh-fire-layout-post-clustering":
-            if (!this.options.fire || !this.options.ftFire || this.trackUpdatesAreFrozen)
+            // console.log(`refresh-fire-layout-post-clustering | ${Object.hasOwn(this.options, 'fire')} | ${this.trackUpdatesAreFrozen} | ${(!this.options.fire || this.trackUpdatesAreFrozen)}`);
+            if (!this.options.fire || this.trackUpdatesAreFrozen)
               return;
-            // console.log(`refresh-fire-layout-post-clustering | ${this.id} | ${this.sessionId} | ${JSON.stringify(data)}`);
+            // console.log(`refresh-fire-layout-post-clustering | ${this.id} | ${data.sid} | ${this.sessionId} | ${JSON.stringify(data)}`);
             if (data.sid !== this.sessionId)
               break;
             this.dataFetcher = new BAMDataFetcher(
