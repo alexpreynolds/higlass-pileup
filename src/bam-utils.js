@@ -939,64 +939,219 @@ export const getFibertoolsFIREMSPOffsets = (segment) => {
   return mspOffsets;
 }
 
+// /**
+//  * Gets an array of all substitutions in the segment
+//  * @param  {String} segment  Current segment
+//  * @param  {String} seq   Read sequence from bam file.
+//  * @return {Array}  Substitutions.
+//  */
+// export const getSubstitutions = (segment, seq) => {
+//   let substitutions = [];
+//   let softClippingAtReadStart = null;
+
+//   if (segment.cigar) {
+//     const cigarSubs = parseMD(segment.cigar, true);
+
+//     let currPos = 0;
+
+//     for (const sub of cigarSubs) {
+//       if (sub.type === 'X') {
+//         // sequence mismatch, no need to do anything
+//         substitutions.push({
+//           pos: currPos,
+//           length: sub.length,
+//           type: 'X',
+//         });
+
+//         currPos += sub.length;
+//       } else if (sub.type === 'I') {
+//         substitutions.push({
+//           pos: currPos,
+//           length: sub.length,
+//           type: 'I',
+//         });
+//       } else if (sub.type === 'D') {
+//         substitutions.push({
+//           pos: currPos,
+//           length: sub.length,
+//           type: 'D',
+//         });
+//         currPos += sub.length;
+//       } else if (sub.type === 'N') {
+//         substitutions.push({
+//           pos: currPos,
+//           length: sub.length,
+//           type: 'N',
+//         });
+//         currPos += sub.length;
+//       } else if (sub.type === '=' || sub.type === 'M') {
+//         currPos += sub.length;
+//       } else {
+//         // console.log('skipping:', sub.type);
+//       }
+//       // if (referenceConsuming.has(sub.base)) {
+//       //   if (queryConsuming.has(sub.base)) {
+//       //     substitutions.push(
+//       //     {
+//       //       pos:
+//       //     })
+//       //   }
+//       // }
+//     }
+
+//     const firstSub = cigarSubs[0];
+//     const lastSub = cigarSubs[cigarSubs.length - 1];
+
+//     // Soft clipping can happen at the beginning, at the end or both
+//     // positions are from the beginning of the read
+//     if (firstSub.type === 'S') {
+//       softClippingAtReadStart = firstSub;
+//       // soft clipping at the beginning
+//       substitutions.push({
+//         pos: -firstSub.length,
+//         type: 'S',
+//         length: firstSub.length,
+//       });
+//     }
+//     // soft clipping at the end
+//     if (lastSub.type === 'S') {
+//       substitutions.push({
+//         pos: segment.to - segment.from,
+//         length: lastSub.length,
+//         type: 'S',
+//       });
+//     }
+
+//     // Hard clipping can happen at the beginning, at the end or both
+//     // positions are from the beginning of the read
+//     if (firstSub.type === 'H') {
+//       substitutions.push({
+//         pos: -firstSub.length,
+//         type: 'H',
+//         length: firstSub.length,
+//       });
+//     }
+//     if (lastSub.type === 'H') {
+//       substitutions.push({
+//         pos: segment.to - segment.from,
+//         length: lastSub.length,
+//         type: 'H',
+//       });
+//     }
+//   }
+
+//   if (segment.md) {
+//     const mdSubstitutions = parseMD(segment.md, false);
+
+//     mdSubstitutions.forEach(function (substitution) {
+//       let posStart = substitution['pos'] + substitution['bamSeqShift'];
+//       let posEnd = posStart + substitution['length'];
+//       // When there is soft clipping at the beginning,
+//       // we need to shift the position where we read the variant from the sequence
+//       // not necessary when there is hard clipping
+//       if (softClippingAtReadStart !== null) {
+//         posStart += softClippingAtReadStart.length;
+//         posEnd += softClippingAtReadStart.length;
+//       }
+//       substitution['variant'] = seq.substring(posStart, posEnd);
+//       delete substitution['bamSeqShift'];
+//     });
+
+//     substitutions = mdSubstitutions.concat(substitutions);
+//   }
+
+//   return substitutions;
+// };
+
 /**
  * Gets an array of all substitutions in the segment
- * @param  {String} segment  Current segment
- * @param  {String} seq   Read sequence from bam file.
- * @return {Array}  Substitutions.
+ * @param  {String}  segment  Current segment
+ * @param  {String}  seq   Read sequence from bam file.
+ * @param  {Boolean} includeClippingOps  Include soft or hard clipping operations in substitutions output.
+ * @param  {Boolean} reverseCIGAROps  Reverse orientation of CIGAR operations array.
+ * @return {Array}   Substitutions.
  */
-export const getSubstitutions = (segment, seq) => {
+export const getSubstitutions = (segment, seq, includeClippingOps, reverseCIGAROps) => {
   let substitutions = [];
   let softClippingAtReadStart = null;
 
   if (segment.cigar) {
-    const cigarSubs = parseMD(segment.cigar, true);
+    let cigarSubs = parseMD(segment.cigar, true);
+
+    if (reverseCIGAROps) {
+      cigarSubs.reverse();
+    }
 
     let currPos = 0;
 
     for (const sub of cigarSubs) {
-      if (sub.type === 'X') {
+      if (includeClippingOps && ((sub.type === 'S') || (sub.type === 'H'))) {
+        substitutions.push({
+          pos: currPos,
+          length: sub.length,
+          range: [currPos + segment.start, currPos + segment.start + sub.length],
+          type: sub.type,
+        });
+        currPos += sub.length;
+      }
+      else if (sub.type === 'X') {
         // sequence mismatch, no need to do anything
         substitutions.push({
           pos: currPos,
           length: sub.length,
+          range: [currPos + segment.start, currPos + segment.start + sub.length],
           type: 'X',
         });
-
         currPos += sub.length;
-      } else if (sub.type === 'I') {
+      } 
+      else if (sub.type === 'I') {
         substitutions.push({
           pos: currPos,
           length: sub.length,
+          range: [currPos + segment.start, currPos + segment.start + sub.length],
           type: 'I',
         });
-      } else if (sub.type === 'D') {
+        // currPos -= sub.length;
+      } 
+      else if (sub.type === 'D') {
         substitutions.push({
           pos: currPos,
           length: sub.length,
+          range: [currPos + segment.start, currPos + segment.start + sub.length],
           type: 'D',
         });
         currPos += sub.length;
-      } else if (sub.type === 'N') {
+      } 
+      else if (sub.type === 'N') {
         substitutions.push({
           pos: currPos,
           length: sub.length,
+          range: [currPos + segment.start, currPos + segment.start + sub.length],
           type: 'N',
         });
         currPos += sub.length;
-      } else if (sub.type === '=' || sub.type === 'M') {
+      } 
+      else if (sub.type === '=') { 
+        substitutions.push({
+          pos: currPos,
+          length: sub.length,
+          range: [currPos + segment.start, currPos + segment.start + sub.length],
+          type: '=',
+        });
         currPos += sub.length;
-      } else {
+      } 
+      else if (sub.type === 'M') {
+        substitutions.push({
+          pos: currPos,
+          length: sub.length,
+          range: [currPos + segment.start, currPos + segment.start + sub.length],
+          type: 'M',
+        });
+        currPos += sub.length;
+      }
+      else {
         // console.log('skipping:', sub.type);
       }
-      // if (referenceConsuming.has(sub.base)) {
-      //   if (queryConsuming.has(sub.base)) {
-      //     substitutions.push(
-      //     {
-      //       pos:
-      //     })
-      //   }
-      // }
     }
 
     const firstSub = cigarSubs[0];
@@ -1038,26 +1193,6 @@ export const getSubstitutions = (segment, seq) => {
         type: 'H',
       });
     }
-  }
-
-  if (segment.md) {
-    const mdSubstitutions = parseMD(segment.md, false);
-
-    mdSubstitutions.forEach(function (substitution) {
-      let posStart = substitution['pos'] + substitution['bamSeqShift'];
-      let posEnd = posStart + substitution['length'];
-      // When there is soft clipping at the beginning,
-      // we need to shift the position where we read the variant from the sequence
-      // not necessary when there is hard clipping
-      if (softClippingAtReadStart !== null) {
-        posStart += softClippingAtReadStart.length;
-        posEnd += softClippingAtReadStart.length;
-      }
-      substitution['variant'] = seq.substring(posStart, posEnd);
-      delete substitution['bamSeqShift'];
-    });
-
-    substitutions = mdSubstitutions.concat(substitutions);
   }
 
   return substitutions;

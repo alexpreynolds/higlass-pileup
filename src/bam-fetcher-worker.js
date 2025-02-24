@@ -246,6 +246,7 @@ const bamRecordToJson = (bamRecord, chrName, chrOffset, trackOptions) => {
   if (trackOptions.fire) {
     segment.metadata = JSON.parse(bamRecord.tags.CO);
     segment.color = PILEUP_COLOR_IXS.FIRE_BG;
+    // console.log(`segment.metadata: ${JSON.stringify(segment.metadata)}`);
   }
 
   if (trackOptions.ftFire) {
@@ -720,9 +721,9 @@ const tile = async (uid, z, x) => {
   if (!uid || !dataOptions[uid] || !dataOptions[uid].maxTileWidth) return;
   const {maxTileWidth, maxSampleSize} = dataOptions[uid];
 
-  // const fiberMinLength = (Object.hasOwn(dataOptions[uid], fiberMinLength)) ? dataOptions[uid].fiberMinLength : 0;
-  // const fiberMaxLength = (Object.hasOwn(dataOptions[uid], fiberMaxLength)) ? dataOptions[uid].fiberMaxLength : 30000;
-  // const fiberStrands = (Object.hasOwn(dataOptions[uid], fiberStrands)) ? dataOptions[uid].fiberStrands : ['+', '-'];
+  const fiberMinLength = (Object.hasOwn(dataOptions[uid], fiberMinLength)) ? dataOptions[uid].fiberMinLength : 0;
+  const fiberMaxLength = (Object.hasOwn(dataOptions[uid], fiberMaxLength)) ? dataOptions[uid].fiberMaxLength : 30000;
+  const fiberStrands = (Object.hasOwn(dataOptions[uid], fiberStrands)) ? dataOptions[uid].fiberStrands : ['+', '-'];
 
   const { bamUrl, fastaUrl, chromSizesUrl } = dataConfs[uid];
   const bamFile = bamFiles[bamUrl];
@@ -788,7 +789,6 @@ const tile = async (uid, z, x) => {
                 );
 
                 if (trackOptions[uid].methylation || trackOptions[uid].fire) {
-                  // console.log(`filtering for methylation or FIRE data (A) | ${fiberMinLength} | ${fiberMaxLength} | ${fiberStrands}`);
                   const filteredByLengthRecords = mappedRecords.filter((rec) => Math.abs(rec.to - rec.from) >= fiberMinLength && Math.abs(rec.to - rec.from) <= fiberMaxLength);
                   const filteredByStrandsRecords = filteredByLengthRecords.filter((rec) => fiberStrands.includes(rec.strand));
                   const filteredRecords = filteredByStrandsRecords;
@@ -808,7 +808,6 @@ const tile = async (uid, z, x) => {
 
           // handle sequence data, if available
           if (sequenceFile) {
-            // console.log(`A1 | pushing sequenceFile lookup into sequenceTileValues | ${chromName}:${minX - chromStart}-${chromEnd - chromStart}`);
             recordPromises.push(
               sequenceFile
                 .getSequence(
@@ -817,7 +816,6 @@ const tile = async (uid, z, x) => {
                   chromEnd - chromStart,
                 )
                 .then((sequence) => {
-                  // console.log(`A1 | sequence | ${uid}.${z}.${x} | ${minX - chromStart} | ${chromEnd - chromStart} | ${sequence}`);
                   const sequenceRecord = {
                     id: `${chromName}:${minX - chromStart}-${chromEnd - chromStart}`,
                     chrom: chromName,
@@ -855,22 +853,18 @@ const tile = async (uid, z, x) => {
                 );
 
                 if (trackOptions[uid].methylation) {
-                  // console.log(`filtering for methylation data (B) | ${fiberMinLength} | ${fiberMaxLength} | ${fiberStrands}`);
                   const filteredByLengthRecords = mappedRecords.filter((rec) => Math.abs(rec.to - rec.from) >= fiberMinLength && Math.abs(rec.to - rec.from) <= fiberMaxLength);
                   const filteredByStrandsRecords = filteredByLengthRecords.filter((rec) => fiberStrands.includes(rec.strand));
                   const filteredRecords = filteredByStrandsRecords;
-                  // console.log(`filteredRecords ${filteredRecords.length}`);
                   tileValues.set(
                     `${uid}.${z}.${x}`,
                     tileValues.get(`${uid}.${z}.${x}`).concat(filteredRecords),
                   );
                 }
                 else if (trackOptions[uid].fire) {
-                  // console.log(`filtering for FIRE data (B) | ${fiberMinLength} | ${fiberMaxLength} | ${fiberStrands}`);
                   const filteredByLengthRecords = mappedRecords.filter((rec) => Math.abs(rec.to - rec.from) >= fiberMinLength && Math.abs(rec.to - rec.from) <= fiberMaxLength);
                   const filteredByStrandsRecords = filteredByLengthRecords.filter((rec) => fiberStrands.includes(rec.strand));
                   const filteredRecords = filteredByStrandsRecords;
-                  // console.log(`filteredRecords ${filteredRecords.length}`);
                   tileValues.set(
                     `${uid}.${z}.${x}`,
                     tileValues.get(`${uid}.${z}.${x}`).concat(filteredRecords),
@@ -889,7 +883,6 @@ const tile = async (uid, z, x) => {
           if (sequenceFile) {
             // handle sequence data, if available
             recordPromises.push(
-              // console.log(`A2 | pushing sequenceFile lookup into sequenceTileValues | ${chromName}:${startPos}-${endPos}`);
               sequenceFile
                 .getSequence(
                   chromName,
@@ -897,7 +890,6 @@ const tile = async (uid, z, x) => {
                   endPos,
                 )
                 .then((sequence) => {
-                  // console.log(`A2 | sequence | ${uid}.${z}.${x} | ${startPos} | ${endPos} | ${sequence}`);
                   const sequenceRecord = {
                     id: `${chromName}:${startPos}-${endPos}`,
                     chrom: chromName,
@@ -1342,9 +1334,9 @@ const exportSignalMatrices = (
     }
   }
 
-  // const fiberMinLength = (Object.hasOwn(dataOptions[uid], "fiberMinLength")) ? dataOptions[uid].fiberMinLength : 0;
-  // const fiberMaxLength = (Object.hasOwn(dataOptions[uid], "fiberMaxLength")) ? dataOptions[uid].fiberMaxLength : 30000;
-  // const fiberStrands = (Object.hasOwn(dataOptions[uid], "fiberStrands")) ? dataOptions[uid].fiberStrands : ['+', '-'];
+  const fiberMinLength = (Object.hasOwn(dataOptions[uid], "fiberMinLength")) ? dataOptions[uid].fiberMinLength : 0;
+  const fiberMaxLength = (Object.hasOwn(dataOptions[uid], "fiberMaxLength")) ? dataOptions[uid].fiberMaxLength : 30000;
+  const fiberStrands = (Object.hasOwn(dataOptions[uid], "fiberStrands")) ? dataOptions[uid].fiberStrands : ['+', '-'];
 
   let segmentList = Object.values(allSegments);
 
@@ -5224,6 +5216,9 @@ const renderSegments = (
             // let defaultSegmentColor = PILEUP_COLOR_IXS[`FIRE_${fireMetadata.defaultRGB}`];
             const fireElementHeight = yScale.bandwidth() * 0.25;
             const topCorrection = fireElementHeight * 1.75;
+
+            // console.log(`segment.substitutions = ${JSON.stringify(segment.substitutions)}`);
+            // console.log(`segment.metadata = ${JSON.stringify(segment.metadata)}`);
   
             segment.substitutions.forEach((substitution) => {
               xLeft = xScale(segment.from + substitution.pos);
@@ -5240,6 +5235,11 @@ const renderSegments = (
               const blockColors = blocks.colors.map((d => colorMap[d]));
               const blockColorIdxs = blocks.colors.map(d => PILEUP_COLOR_IXS[`FIRE_${colorMap[d]}`]);
               const blockHeightFactors = blocks.colors.map(d => trackOptions.fire.metadata.itemRGBMap[colorMap[d]].heightFactor);
+
+              // console.log(`blocks ${JSON.stringify(blocks)}`);
+              // console.log(`colorMap ${JSON.stringify(colorMap)}`);
+              // console.log(`blockColors ${JSON.stringify(blockColors)}`);
+              // console.log(`fireEnabledCategories ${JSON.stringify(fireEnabledCategories)}`);
   
               for (let i = 0; i < blocks.count; i++) {
                 const blockColorRgb = blockColors[i];
@@ -5250,6 +5250,7 @@ const renderSegments = (
                   const blockWidth = Math.max(1, xScale(blockSize) - xScale(0));
                   const blockXLeft = xScale(segment.from + blockOffset);
                   const blockYTop = yTop + ((yBottom - yTop) * (1 - (0.125 * blockHeightFactors[i]))) - topCorrection;
+                  // console.log(`${blockXLeft}, ${blockYTop}, ${blockWidth}, ${fireElementHeight * blockHeightFactors[i]}, ${blockColorIdx}`);
                   addRect(blockXLeft, blockYTop, blockWidth, fireElementHeight * blockHeightFactors[i], blockColorIdx);
                 }
               }

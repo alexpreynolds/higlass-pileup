@@ -1,7 +1,8 @@
 {
-  "name": "higlass-pileup",
-  "version": "1.6.6",
+  "name": "@apr144/higlass-pileup",
+  "version": "1.6.6-001",
   "description": "HiGlass Pileup Track",
+  "private": false,
   "keywords": [
     "HiGlass",
     "Track"

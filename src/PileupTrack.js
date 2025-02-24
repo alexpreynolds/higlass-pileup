@@ -221,7 +221,9 @@ const PileupTrack = (HGC, ...args) => {
       this.loadingText.anchor.x = 0;
       this.loadingText.anchor.y = 0;
 
-      this.pLabel.addChild(this.loadingText);
+      if (this.options.showStatusMessages) {
+        this.pLabel.addChild(this.loadingText);
+      }
 
       this.externalInit(options);
 
@@ -521,22 +523,27 @@ varying vec4 vColor;
             this.prevOptions = Object.assign({}, this.options);
             break;
           case "cluster-layout":
+            console.log(`A`);
             if ((!this.options.methylation) || this.clusterData || this.trackUpdatesAreFrozen)
               break;
+            console.log(`B`);
             if (data.sid !== this.sessionId)
               break;
+            console.log(`C`);
             this.dataFetcher = new BAMDataFetcher(
               this.dataFetcher.dataConfig,
               this.options,
               this.worker,
               HGC,
             );
+            console.log(`D`);
             this.dataFetcher.track = this;
             this.prevRows = [];
             this.removeTiles(Object.keys(this.fetchedTiles));
             this.fetching.clear();
             this.refreshTiles();
             this.externalInit(this.options);
+            console.log(`E`);
             this.clusterData = {
               range: data.range,
               viewportRange: data.viewportRange,
@@ -554,7 +561,9 @@ varying vec4 vColor;
               basesPerPixel: data.basesPerPixel,
               viewportWidthInPixels: data.viewportWidthInPixels,
             };
-            this.updateExistingGraphics();
+            console.log(`F`);
+            this.updateExistingGraphics(true);
+            console.log(`G`);
             this.prevOptions = Object.assign({}, this.options);
             break;
           case "bed12-layout":
@@ -1066,23 +1075,30 @@ varying vec4 vColor;
       });
     }
 
-    updateExistingGraphics() {
+    updateExistingGraphics(fromClusterLayoutCall) {
+      if (fromClusterLayoutCall) console.log(`updateExistingGraphics A`);
       if ((this.trackUpdatesAreFrozen) && (this.options.fire || this.options.ftFire || this.options.methylation)) return;
 
       this.loadingText.text = 'Rendering...';
 
+      if (fromClusterLayoutCall) console.log(`updateExistingGraphics B`);
       const fetchedTileIds = new Set(Object.keys(this.fetchedTiles));
       if (!eqSet(this.visibleTileIds, fetchedTileIds)) {
+        console.log('visibleTileIds and fetchedTileIds are not equal');
+        console.log(`visibleTileIds: ${JSON.stringify(Array.from(this.visibleTileIds))}`);
+        console.log(`fetchedTileIds: ${JSON.stringify(Array.from(fetchedTileIds))}`);
         this.updateLoadingText();
         return;
       }
 
+      if (fromClusterLayoutCall) console.log(`updateExistingGraphics C`);
       // Prevent multiple renderings with the same tiles. This can happen when multiple new tiles come in at once
       if (eqSet(this.previousTileIdsUsedForRendering, fetchedTileIds)) {
         return;
       }
       this.previousTileIdsUsedForRendering = fetchedTileIds;
 
+      if (fromClusterLayoutCall) console.log(`updateExistingGraphics D`);
       const fetchedTileKeys = Object.keys(this.fetchedTiles);
       fetchedTileKeys.forEach((x) => {
         this.fetching.delete(x);
@@ -1090,6 +1106,7 @@ varying vec4 vColor;
       });
       this.updateLoadingText();
 
+      if (fromClusterLayoutCall) console.log(`updateExistingGraphics E`);
       this.worker.then((tileFunctions) => {
         tileFunctions
           .renderSegments(
@@ -1106,12 +1123,17 @@ varying vec4 vColor;
             this.fireIdentifierData,
           )
           .then((toRender) => {
+            if (fromClusterLayoutCall) console.log(`updateExistingGraphics E 1`);
             if (!toRender)
               return;
+
+            if (fromClusterLayoutCall) console.log(`updateExistingGraphics E 2`);
 
             if (this.fireIdentifierData) {
               this.fireIdentifierData = null;
             }
+
+            if (fromClusterLayoutCall) console.log(`updateExistingGraphics E 3`);
 
             if (toRender.clusterResultsToExport) {
               this.clusterResultsReadyToExport[this.id] = true;
@@ -1128,7 +1150,11 @@ varying vec4 vColor;
               toRender.clusterResultsToExport = null;
             }
 
+            if (fromClusterLayoutCall) console.log(`updateExistingGraphics E 4`);
+
             if (toRender.clusterResultsToExport && !this.clusterResultsReadyToExport[this.id]) return;
+
+            if (fromClusterLayoutCall) console.log(`updateExistingGraphics E 5`);
 
             try {
               this.bc.postMessage({
@@ -1139,6 +1165,8 @@ varying vec4 vColor;
               });
             } catch (e) {}
 
+            if (fromClusterLayoutCall) console.log(`updateExistingGraphics E 6`);
+
             const updateExistingGraphicsStart = performance.now();
 
             this.loadingText.visible = false;
@@ -1147,6 +1175,8 @@ varying vec4 vColor;
               this.rendering.delete(x);
             });
             this.updateLoadingText();
+
+            if (fromClusterLayoutCall) console.log(`updateExistingGraphics E 7`);
 
             if (this.maxTileWidthReached) {
               if (
@@ -1172,6 +1202,8 @@ varying vec4 vColor;
               } catch (e) {}
               return;
             }
+
+            if (fromClusterLayoutCall) console.log(`updateExistingGraphics E 8`);
 
             this.errorTextText = null;
             this.pBorder.clear();
@@ -1226,6 +1258,8 @@ varying vec4 vColor;
 
             this.pMain.x = this.position[0];
 
+            if (fromClusterLayoutCall) console.log(`updateExistingGraphics E 9`);
+
             if (this.segmentGraphics) {
               this.pMain.removeChild(this.segmentGraphics);
             }
@@ -1236,6 +1270,8 @@ varying vec4 vColor;
             // remove and add again to place on top
             this.pMain.removeChild(this.mouseOverGraphics);
             this.pMain.addChild(this.mouseOverGraphics);
+
+            if (fromClusterLayoutCall) console.log(`updateExistingGraphics E 10`);
 
             this.yScaleBands = {};
             for (let key in this.prevRows) {
@@ -1262,6 +1298,8 @@ varying vec4 vColor;
               this.drawnAtScale,
             );
 
+            if (fromClusterLayoutCall) console.log(`updateExistingGraphics E 11`);
+
             // if somebody zoomed vertically, we want to readjust so that
             // they're still zoomed in vertically
             this.segmentGraphics.scale.y = this.valueScaleTransform.k;
@@ -1269,6 +1307,8 @@ varying vec4 vColor;
 
             this.draw();
             this.animate();
+
+            if (fromClusterLayoutCall) console.log(`updateExistingGraphics E 12`);
 
             if (this.clusterData) {
               this.clusterData = null;
@@ -1303,7 +1343,7 @@ varying vec4 vColor;
               sid: this.sessionId,
               elapsedTime: elapsedTimeC,
             };
-            // console.log(`${JSON.stringify(msg)}`);
+            if (fromClusterLayoutCall) console.log(`${JSON.stringify(msg)}`);
             try {
               this.bc.postMessage(msg);
             } catch (e) {}
@@ -1325,6 +1365,7 @@ varying vec4 vColor;
     }
 
     updateLoadingText() {
+      if (!this.options.showStatusMessages) return;
       this.loadingText.visible = true;
       this.loadingText.text = '';
 
@@ -1593,24 +1634,26 @@ varying vec4 vColor;
                       const chrom = atcX[0];
                       position = Math.ceil(atcX[1]);
                       positionText = `${chrom}:${position}`;
-                      const methylationOffset = position - (read.from - read.chrOffset);
-                      read.methylationOffsets.forEach((mo) => {
-                        const moQuery = mo.offsets.indexOf(methylationOffset);
-                        // if (eventText && eventProbability) return;
-                        if (moQuery !== -1) {
-                          const candidateEventProbability = parseInt(mo.probabilities[moQuery]);
-                          if (eventProbability && eventProbability < candidateEventProbability) {
-                            eventProbability = candidateEventProbability;
-                            eventText = ((mo.unmodifiedBase === 'A') || (mo.unmodifiedBase === 'T')) ? 'm6A' : ((mo.unmodifiedBase === 'C') && mo.code === 'm') ? '5mC' : '5hmC';
-                          }
-                          else if (!eventProbability) {
-                            if (candidateEventProbability >= this.options.methylation.probabilityThresholdRange[0]) {
+                      if (this.options.methylation) {
+                        const methylationOffset = position - (read.from - read.chrOffset);
+                        read.methylationOffsets.forEach((mo) => {
+                          const moQuery = mo.offsets.indexOf(methylationOffset);
+                          // if (eventText && eventProbability) return;
+                          if (moQuery !== -1) {
+                            const candidateEventProbability = parseInt(mo.probabilities[moQuery]);
+                            if (eventProbability && eventProbability < candidateEventProbability) {
                               eventProbability = candidateEventProbability;
                               eventText = ((mo.unmodifiedBase === 'A') || (mo.unmodifiedBase === 'T')) ? 'm6A' : ((mo.unmodifiedBase === 'C') && mo.code === 'm') ? '5mC' : '5hmC';
                             }
+                            else if (!eventProbability) {
+                              if (candidateEventProbability >= this.options.methylation.probabilityThresholdRange[0]) {
+                                eventProbability = candidateEventProbability;
+                                eventText = ((mo.unmodifiedBase === 'A') || (mo.unmodifiedBase === 'T')) ? 'm6A' : ((mo.unmodifiedBase === 'C') && mo.code === 'm') ? '5mC' : '5hmC';
+                              }
+                            }
                           }
-                        }
-                      });
+                        });
+                      }
                     }
 
                     let output = `<div class="track-mouseover-menu-table">`;
@@ -1974,7 +2017,7 @@ varying vec4 vColor;
       [this.pMain.position.x, this.pMain.position.y] = this.position;
       [this.pMouseOver.position.x, this.pMouseOver.position.y] = this.position;
 
-      [this.loadingText.x, this.loadingText.y] = newPosition;
+      if (this.options.showStatusMessages) { [this.loadingText.x, this.loadingText.y] = newPosition; }
     }
 
     movedY(dY) {
@@ -2172,6 +2215,7 @@ PileupTrack.config = {
     'largeInsertSizeThreshold',
     'viewAsPairs',
     'showTooltip',
+    'showStatusMessages',
     // 'minZoom'
   ],
   defaultOptions: {
@@ -2199,6 +2243,7 @@ PileupTrack.config = {
     largeInsertSizeThreshold: 1000,
     viewAsPairs: false,
     showTooltip: true,
+    showStatusMessages: false,
   },
   optionsInfo: {
     outlineReadOnHover: {

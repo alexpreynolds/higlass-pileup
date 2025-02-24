@@ -4,7 +4,6 @@ class BAMDataFetcher {
   constructor(dataConfig, trackOptions, worker, HGC) {
     this.dataConfig = dataConfig;
     this.uid = HGC.libraries.slugid.nice();
-
     this.worker = worker;
     this.isServerFetcher = !(dataConfig.type && dataConfig.type === 'bam');
     this.prevRequestTime = 0;
@@ -43,6 +42,12 @@ class BAMDataFetcher {
           trackOptions,
         )
         .then(() => this.worker);
+    });
+  }
+
+  cleanup() {
+    this.initPromise = this.worker.then(tileFunctions => {
+      tileFunctions.cleanup();
     });
   }
 
