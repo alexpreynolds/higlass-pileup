@@ -1,4 +1,4 @@
-import { group, range } from 'd3-array';
+import { range } from 'd3-array';
 import { scaleLinear, scaleBand } from 'd3-scale';
 import { format } from 'd3-format';
 import { expose, Transfer } from 'threads/worker';
@@ -14,11 +14,18 @@ import {
   indexDHSColors,
   // fireColors,
   genericBedColors,
+  PILEUP_COLOR_IXS,
+  replaceColorIdxs,
+  appendColorIdxs,
 } from './bam-utils';
 import LRU from 'lru-cache';
-import { PILEUP_COLOR_IXS, replaceColorIdxs, appendColorIdxs } from './bam-utils';
 import { parseChromsizesRows, ChromosomeInfo } from './chrominfo-utils';
-import { clusterData, euclideanDistance, jaccardDistance, averageDistance } from '@apr144/hclust';
+import { 
+  clusterData,
+  euclideanDistance,
+  jaccardDistance,
+  averageDistance,
+} from '@apr144/hclust';
 import { RemoteFile } from 'generic-filehandle';
 import { phylotree } from "phylotree";
 
@@ -142,39 +149,91 @@ function natcmp(xRow, yRow) {
   return 0;
 }
 
-const bamRecordToJson = (bamRecord, chrName, chrOffset, trackOptions, basicSegmentAttributesOnly) => {
-  // const seq = bamRecord.get('seq'); // pre-v3 bam-js API
-  const seq = bamRecord.seq;
-  // const from = +bamRecord.get('start') + 1 + chrOffset; // pre-v3 bam-js API
-  const from = bamRecord.start + 1 + chrOffset;
-  // const to = +bamRecord.get('end') + 1 + chrOffset; // pre-v3 bam-js API
-  const to = bamRecord.end + 1 + chrOffset;
+const groupSectionsBySortedBase = (sections, sortByBase) => {
+  // This function will take a set of sections and partition them
+  // into groups of sections and return them in some order
 
+  // We'll assume that all sections are on the same chromosome as the
+  // sortByBase position
+
+  // sectionGroups will store the groups of sections for each base
+  // type at the sort by position
+  const sectionGroups = {};
+
+  for (let section of sections) {
+    let overlapBase = null;
+
+    for (let segment of section.segments) {
+      if (
+        segment.chrName == sortByBase.chr &&
+        segment.from - segment.chrOffset <= sortByBase.pos &&
+        sortByBase.pos <= segment.to - segment.chrOffset
+      ) {
+        // The read overlaps the sortByBase position
+
+        // The following loop could be replaced by a binary search
+        // if the substitutions were sorted
+        for (let substitution of segment.substitutions) {
+          if (
+            substitution.variant &&
+            segment.from - segment.chrOffset + substitution.pos ==
+              sortByBase.pos
+          ) {
+            overlapBase = substitution.variant;
+            break;
+          }
+        }
+
+        if (sectionGroups[overlapBase]) {
+          sectionGroups[overlapBase].push(section);
+        } else {
+          sectionGroups[overlapBase] = [section];
+        }
+      }
+    }
+  }
+
+  // Sort the chunks of sections to return.
+  // The existing sorting probably isn't the one we want because
+  // sections that don't have a substitution at this location will
+  // have a "null" there
+  const sortedBases = Object.keys(sectionGroups).sort();
+
+  let toReturn = [];
+  for (let base of sortedBases) {
+    toReturn = toReturn.concat(sectionGroups[base]);
+  }
+
+  return toReturn;
+};
+
+//
+// The bam-js v3 API is used here to access BAM record field data
+// as case-sensitive fields are not available in the v2 and prior API.
+// Additionally, the later versions of bam-js tend to work faster than
+// older versions at parsing BAM records.
+// 
+const bamRecordToJson = (bamRecord, chrName, chrOffset, trackOptions, basicSegmentAttributesOnly) => {
+  const seq = bamRecord.seq;
+  const from = bamRecord.start + 1 + chrOffset;
+  const to = bamRecord.end + 1 + chrOffset;
   const segment = {
-    // id: bamRecord.get('id'), // pre-v3 bam-js API
     id: bamRecord.id,
     mate_ids: [], // split reads can have multiple mates
-    // start: +bamRecord.get('start') + 1, // pre-v3 bam-js API
     start: bamRecord.start + 1,
     from: from,
     to: to,
     length: to - from - 1,
     fromWithClipping: from,
     toWithClipping: to,
-    // md: bamRecord.get('MD'), // pre-v3 bam-js API
     md: bamRecord.tags.MD,
-    // sa: bamRecord.get('SA'), // Needed to determine if this is a split read // pre-v3 bam-js API
     sa: bamRecord.tags.SA, // Needed to determine if this is a split read
     chrName,
     chrOffset,
-    // cigar: bamRecord.get('cigar'), // pre-v3 bam-js API
     cigar: bamRecord.CIGAR,
-    // mapq: bamRecord.get('mq'), // pre-v3 bam-js API
     mapq: bamRecord.qual,
-    // strand: bamRecord.get('strand') === 1 ? '+' : '-', // pre-v3 bam-js API
     strand: (bamRecord.flags & 16) ? '-' : '+',
     row: null,
-    // readName: bamRecord.get('name'),
     readName: bamRecord.name,
     seq: seq,
     color: PILEUP_COLOR_IXS.BG,
@@ -184,13 +243,6 @@ const bamRecordToJson = (bamRecord, chrName, chrOffset, trackOptions, basicSegme
     methylationOffsets: [],
     mspOffsets: [],
     nucOffsets: [],
-    // mm: bamRecord.get('MM'), // pre-v3 bam-js API
-    // ml: bamRecord.get('ML'), // pre-v3 bam-js API
-    // as: bamRecord.get('as'), // pre-v3 bam-js API
-    // al: bamRecord.get('al'), // pre-v3 bam-js API
-    // aq: bamRecord.get('aq'), // pre-v3 bam-js API
-    // ns: bamRecord.get('ns'), // pre-v3 bam-js API
-    // nl: bamRecord.get('nl'), // pre-v3 bam-js API
     MM: bamRecord.tags.MM,
     ML: bamRecord.tags.ML,
     as: bamRecord.tags.as,
@@ -214,15 +266,13 @@ const bamRecordToJson = (bamRecord, chrName, chrOffset, trackOptions, basicSegme
   const includeClippingOps = true;
   const reverseCIGAROps = (trackOptions && trackOptions.ftFire && segment.strand === '-');
 
-  segment.substitutions = getSubstitutions(segment, seq, includeClippingOps, reverseCIGAROps);
+  segment.substitutions = getSubstitutions(segment, seq, includeClippingOps, reverseCIGAROps, trackOptions);
 
   if (trackOptions.methylation) {
     segment.methylationOffsets = getMethylationOffsets(segment, seq, trackOptions.methylation.alignCpGEvents);
-    // console.log(`segment.methylationOffsets | ${JSON.stringify(segment.methylationOffsets)}`);
   }
 
   if (trackOptions.fire) {
-    // segment.metadata = JSON.parse(bamRecord.get('CO'));
     segment.metadata = JSON.parse(bamRecord.tags.CO);
     // segment.fireColors = fireColors(trackOptions);
     // const newPileupColorIdxs = {};
@@ -234,12 +284,10 @@ const bamRecordToJson = (bamRecord, chrName, chrOffset, trackOptions, basicSegme
     // replaceColorIdxs(newPileupColorIdxs);
     // appendColorIdxs(newPileupColorIdxs);
     segment.color = PILEUP_COLOR_IXS.FIRE_BG;
-    // console.log(`PILEUP_COLOR_IXS ${JSON.stringify(PILEUP_COLOR_IXS)}`);
   }
 
   if (trackOptions.ftFire) {
     // const alignCpGEvents = true;
-    // segment.methylationOffsets = getMethylationOffsets(segment, seq, alignCpGEvents);
     segment.mspOffsets = getFibertoolsFIREMSPOffsets(segment);
     segment.nucOffsets = getFibertoolsFIRENucleosomeOffsets(segment);
     segment.metadata = {};
@@ -247,12 +295,10 @@ const bamRecordToJson = (bamRecord, chrName, chrOffset, trackOptions, basicSegme
   }
 
   if (trackOptions.tfbs) {
-    // segment.metadata = JSON.parse(bamRecord.get('CO'));
     segment.metadata = JSON.parse(bamRecord.tags.CO);
   }
 
   if (trackOptions.genericBed) {
-    // segment.metadata = JSON.parse(bamRecord.get('CO'));
     segment.metadata = JSON.parse(bamRecord.tags.CO);
     segment.genericBedColors = genericBedColors(trackOptions);
     const newPileupColorIdxs = {};
@@ -264,9 +310,7 @@ const bamRecordToJson = (bamRecord, chrName, chrOffset, trackOptions, basicSegme
   }
 
   if (trackOptions.indexDHS) {
-    // segment.metadata = JSON.parse(bamRecord.get('CO'));
     segment.metadata = JSON.parse(bamRecord.tags.CO);
-    // console.log(`trackOptions ${JSON.stringify(trackOptions)}`);
     segment.indexDHSColors = indexDHSColors(trackOptions);
 
     const newPileupColorIdxs = {};
@@ -282,21 +326,16 @@ const bamRecordToJson = (bamRecord, chrName, chrOffset, trackOptions, basicSegme
   let toClippingAdjustment = 0;
 
   // We are doing this for row calculation, so that there is no overlap of clipped regions with regular ones
-  for (const sub of segment.substitutions) {
-    if ((sub.type === "S" || sub.type === "H") && sub.pos < 0) {
+  segment.substitutions.forEach((sub) => {
+    // left soft clipped region
+    // make sure to change this in tabularJsonToRowJson
+    if ((sub.type === 'S' || sub.type === 'H') && sub.pos < 0) {
       fromClippingAdjustment = -sub.length;
-    } else if ((sub.type === "S" || sub.type === "H") && sub.pos > 0) {
+    } else if ((sub.type === 'S' || sub.type === 'H') && sub.pos > 0) {
       toClippingAdjustment = sub.length;
     }
-  }
-  // segment.substitutions.forEach((sub) => {
-  //   // left soft clipped region
-  //   if ((sub.type === "S" || sub.type === "H") && sub.pos < 0) {
-  //     fromClippingAdjustment = -sub.length;
-  //   } else if ((sub.type === "S" || sub.type === "H") && sub.pos > 0) {
-  //     toClippingAdjustment = sub.length;
-  //   }
-  // });
+  });
+
   segment.fromWithClipping += fromClippingAdjustment;
   segment.toWithClipping += toClippingAdjustment;
 
@@ -305,8 +344,7 @@ const bamRecordToJson = (bamRecord, chrName, chrOffset, trackOptions, basicSegme
 
 // This will group the segments by readName and assign mates to reads
 const findMates = (segments) => {
-
-  const segmentsByReadName = groupBy(segments, "readName");
+  const segmentsByReadName = groupBy(segments, 'readName');
 
   Object.entries(segmentsByReadName).forEach(([readName, segmentGroup]) =>
     {
@@ -315,8 +353,10 @@ const findMates = (segments) => {
         const mate = segmentGroup[1];
         read.mate_ids = [mate.id];
         mate.mate_ids = [read.id];
-      }
-      else if (segmentGroup.length > 2) {
+
+        read.mates = [mate];
+        mate.mates = [read];
+      } else if (segmentGroup.length > 2) {
         // It might be useful to distinguish reads from chimeric alignments in the future,
         // e.g., if we want to highlight read orientations of split reads. Not doing this for now.
         // See flags here: https://broadinstitute.github.io/picard/explain-flags.html
@@ -329,6 +369,7 @@ const findMates = (segments) => {
         // it will only be used for the mouseover and it is probably useful, if the whole group is highlighted on hover
         const ids = segmentGroup.map((segment) => segment.id);
         segmentGroup.forEach((segment) => {
+          segment.mates = segmentGroup.filter((s) => s != segment);
           segment.mate_ids = ids;
         });
       }
@@ -338,75 +379,69 @@ const findMates = (segments) => {
   return segmentsByReadName
 }
 
-const prepareHighlightedReads = (segments, trackOptions) => {
-
-  const outlineMateOnHover =  trackOptions.outlineMateOnHover;
+const prepareHighlightedReads = (segmentsByReadName, trackOptions) => {
+  const outlineMateOnHover = trackOptions.outlineMateOnHover;
   const highlightIS = trackOptions.highlightReadsBy.includes('insertSize');
   const highlightPO = trackOptions.highlightReadsBy.includes('pairOrientation');
-  const highlightISandPO = trackOptions.highlightReadsBy.includes('insertSizeAndPairOrientation');
-
-  let segmentsByReadName;
+  const highlightISandPO = trackOptions.highlightReadsBy.includes(
+    'insertSizeAndPairOrientation',
+  );
 
   if (highlightIS || highlightPO || highlightISandPO) {
-    segmentsByReadName = findMates(segments);
+    // segmentsByReadName = findMates(segments);
   } else if (outlineMateOnHover) {
-    findMates(segments);
     return;
   } else {
     return;
   }
 
-  Object.entries(segmentsByReadName).forEach(([readName, segmentGroup]) =>
-    {
-      // We are only highlighting insert size and pair orientation for normal (non chimeric reads)
-      if (segmentGroup.length === 2){
+  Object.entries(segmentsByReadName).forEach(([readName, segmentGroup]) => {
+    // We are only highlighting insert size and pair orientation for normal (non chimeric reads)
+    if (segmentGroup.length === 2) {
+      // Changes to read or mate will change the values in the original segments array (reference)
+      const read = segmentGroup[0];
+      const mate = segmentGroup[1];
+      read.colorOverride = null;
+      mate.colorOverride = null;
+      const segmentDistance = calculateInsertSize(read, mate);
+      const hasLargeInsertSize =
+        trackOptions.largeInsertSizeThreshold &&
+        segmentDistance > trackOptions.largeInsertSizeThreshold;
+      const hasSmallInsertSize =
+        trackOptions.smallInsertSizeThreshold &&
+        segmentDistance < trackOptions.smallInsertSizeThreshold;
+      const hasLLOrientation = read.strand === '+' && mate.strand === '+';
+      const hasRROrientation = read.strand === '-' && mate.strand === '-';
+      const hasRLOrientation = read.from < mate.from && read.strand === '-';
 
-        // Changes to read or mate will change the values in the original segments array (reference)
-        const read = segmentGroup[0];
-        const mate = segmentGroup[1];
-        read.colorOverride = null;
-        mate.colorOverride = null;
-        const segmentDistance = calculateInsertSize(read, mate);
-        const hasLargeInsertSize =
-          trackOptions.largeInsertSizeThreshold &&
-          segmentDistance > trackOptions.largeInsertSizeThreshold;
-        const hasSmallInsertSize =
-          trackOptions.smallInsertSizeThreshold &&
-          segmentDistance < trackOptions.smallInsertSizeThreshold;
-        const hasLLOrientation = read.strand === '+' && mate.strand === '+';
-        const hasRROrientation = read.strand === '-' && mate.strand === '-';
-        const hasRLOrientation = read.from < mate.from && read.strand === '-';
-
-        if (highlightIS) {
-          if (hasLargeInsertSize) {
-            read.colorOverride = PILEUP_COLOR_IXS.LARGE_INSERT_SIZE;
-          } else if (hasSmallInsertSize) {
-            read.colorOverride = PILEUP_COLOR_IXS.SMALL_INSERT_SIZE;
-          }
+      if (highlightIS) {
+        if (hasLargeInsertSize) {
+          read.colorOverride = PILEUP_COLOR_IXS.LARGE_INSERT_SIZE;
+        } else if (hasSmallInsertSize) {
+          read.colorOverride = PILEUP_COLOR_IXS.SMALL_INSERT_SIZE;
         }
-
-        if (
-          highlightPO ||
-          (highlightISandPO && (hasLargeInsertSize || hasSmallInsertSize))
-        ) {
-          if (hasLLOrientation) {
-            read.colorOverride = PILEUP_COLOR_IXS.LL;
-            read.mappingOrientation = '++';
-          } else if (hasRROrientation) {
-            read.colorOverride = PILEUP_COLOR_IXS.RR;
-            read.mappingOrientation = '--';
-          } else if (hasRLOrientation) {
-            read.colorOverride = PILEUP_COLOR_IXS.RL;
-            read.mappingOrientation = '-+';
-          }
-        }
-
-        mate.colorOverride = read.colorOverride;
-        mate.mappingOrientation = read.mappingOrientation;
       }
-    }
-  );
 
+      if (
+        highlightPO ||
+        (highlightISandPO && (hasLargeInsertSize || hasSmallInsertSize))
+      ) {
+        if (hasLLOrientation) {
+          read.colorOverride = PILEUP_COLOR_IXS.LL;
+          read.mappingOrientation = '++';
+        } else if (hasRROrientation) {
+          read.colorOverride = PILEUP_COLOR_IXS.RR;
+          read.mappingOrientation = '--';
+        } else if (hasRLOrientation) {
+          read.colorOverride = PILEUP_COLOR_IXS.RL;
+          read.mappingOrientation = '-+';
+        }
+      }
+
+      mate.colorOverride = read.colorOverride;
+      mate.mappingOrientation = read.mappingOrientation;
+    }
+  });
 };
 
 /** Convert mapped read information returned from a higlass
@@ -431,29 +466,60 @@ const tabularJsonToRowJson = (tabularJson) => {
     newRow.from += 1;
     newRow.to += 1;
 
+    // Convert the from and to positions to genome positions
+    newRow.from += newRow.chrOffset;
+    newRow.to += newRow.chrOffset;
+    newRow.color = PILEUP_COLOR_IXS.BG;
+    newRow.mate_ids = [];
+
+    newRow.fromWithClipping = newRow.from;
+    newRow.toWithClipping = newRow.to;
+
     if (newRow.variants) {
       // server has returned information about variants in the form
       // (queryPos, referencePos, substitution)
       // modeled on pysam's get_aligned_pairs
-      newRow.substitutions = newRow.variants.map((x) => ({
-        pos: x[1] - (newRow.from - newRow.chrOffset) + 1,
-        variant: x[2].toUpperCase(),
-        length: 1,
-      }));
+      newRow.substitutions = newRow.variants.map((x) => {
+        const sub = {
+          pos: x[1],
+          variant: x[2].toUpperCase(),
+          base: x[3].toUpperCase(),
+          length: 1,
+        };
+
+        return sub;
+      });
     }
 
     if (newRow.cigars) {
+      let fromClippingAdjustment = 0;
+      let toClippingAdjustment = 0;
+
       // server has returned cigar information
       // format: x[0] : start of region
       // x[1]: type of region (e.g. 'S', 'H', 'I', etc...)
       // x[2]: the length of the region
       for (const x of newRow.cigars) {
-        newRow.substitutions.push({
+        const sub = {
           pos: x[0] - (newRow.from - newRow.chrOffset) + 1,
           type: x[1].toUpperCase(),
           length: x[2],
-        });
+        };
+
+        newRow.substitutions.push(sub);
+
+        // left soft clipped region
+        // Make sure to change this in bamRecordToJson as well
+
+        if ((sub.type === 'S' || sub.type === 'H') && sub.pos < 0) {
+          fromClippingAdjustment = -sub.length;
+        } else if ((sub.type === 'S' || sub.type === 'H') && sub.pos > 0) {
+          toClippingAdjustment = sub.length;
+        }
       }
+
+      newRow.fromWithClipping += fromClippingAdjustment;
+      newRow.toWithClipping += toClippingAdjustment;
     }
 
     rowJson.push(newRow);
@@ -508,13 +574,13 @@ const serverInit = (uid, server, tilesetUid, authHeader) => {
 
 const DEFAULT_DATA_OPTIONS = {
   maxTileWidth: 2e5,
-}
+};
 
 const init = (uid, bamUrl, baiUrl, fastaUrl, faiUrl, chromSizesUrl, options, tOptions) => {
   if (!options) {
     dataOptions[uid] = DEFAULT_DATA_OPTIONS;
   } else {
-    dataOptions[uid] = {...DEFAULT_DATA_OPTIONS, ...options}
+    dataOptions[uid] = { ...DEFAULT_DATA_OPTIONS, ...options };
   }
 
   if (fastaUrl && faiUrl) {
@@ -547,41 +613,6 @@ const init = (uid, bamUrl, baiUrl, fastaUrl, faiUrl, chromSizesUrl, options, tOp
 
     // we have to fetch the header before we can fetch data
     bamHeaders[bamUrl] = bamFiles[bamUrl].getHeader({assemblyName: 'hg38'});
-
-    // const bamUrlObj = new URL(bamUrl)
-    // const bamUrlUsername = bamUrlObj.username
-    // const bamUrlPassword = bamUrlObj.password
-    // const cleanBamUrl = `${bamUrlObj.protocol}//${bamUrlObj.host}${bamUrlObj.pathname}${bamUrlObj.search}`;
-    // const cleanBaiUrl = `${bamUrlObj.protocol}//${bamUrlObj.host}${bamUrlObj.pathname}.bai${bamUrlObj.search}`;
-
-    // if (bamUrlUsername && bamUrlPassword) {
-    //   bamFiles[bamUrl] = new BamFile({
-    //     bamFilehandle: new RemoteFile(cleanBamUrl, {
-    //       overrides: {
-    //         credentials: 'include',
-    //         headers: {
-    //           Authorization: 'Basic ' + btoa(bamUrlUsername + ':' + bamUrlPassword),
-    //         },
-    //       },
-    //     }),
-    //     baiFilehandle: new RemoteFile(cleanBaiUrl, {
-    //       overrides: {
-    //         credentials: 'include',
-    //         headers: {
-    //           Authorization: 'Basic ' + btoa(bamUrlUsername + ':' + bamUrlPassword),
-    //         },
-    //       },
-    //     }),
-    //   })
-    // }
-    // else {
-    //   bamFiles[bamUrl] = new BamFile({
-    //     bamUrl: bamUrl,
-    //     baiUrl: baiUrl,
-    //   });
-    // }
-
-    // bamHeaders[bamUrl] = bamFiles[bamUrl].getHeader();
   }
 
   dataConfs[uid] = {
@@ -616,7 +647,7 @@ const getCoverage = (uid, segmentList, samplingDistance) => {
 
   // getCoverage potentiall get calles before the chromInfos finished loading
   // Exit the function in this case
-  if(!chromInfos[chromSizesUrl]){
+  if (!chromInfos[chromSizesUrl]) {
     return {
       coverage: coverage,
       maxCoverage: maxCoverage,
@@ -629,7 +660,6 @@ const getCoverage = (uid, segmentList, samplingDistance) => {
     // Find the first position that is in the sampling set
     const firstFrom = from - (from % samplingDistance) + samplingDistance;
     for (let i = firstFrom; i < to; i = i + samplingDistance) {
-
       if (!coverage[i]) {
         coverage[i] = {
           reads: 0,
@@ -641,7 +671,7 @@ const getCoverage = (uid, segmentList, samplingDistance) => {
             T: 0,
             N: 0,
           },
-          range: "" // Will be used to show the bounds of this coverage bin when mousing over
+          range: '', // Will be used to show the bounds of this coverage bin when mousing over
         };
       }
       coverage[i].reads++;
@@ -665,17 +695,15 @@ const getCoverage = (uid, segmentList, samplingDistance) => {
   }
 
   const absToChr = chromInfos[chromSizesUrl].absToChr;
-  Object.entries(coverage).forEach(
-      ([pos, entry]) => {
-        const from = absToChr(pos);
-        let range = from[0] + ":" + format(',')(from[1]);
-        if(samplingDistance > 1){
-          const to = absToChr(parseInt(pos,10)+samplingDistance-1);
-          range += "-" + format(',')(to[1]);
-        }
-        entry.range = range;
-      }
-  );
+  Object.entries(coverage).forEach(([pos, entry]) => {
+    const from = absToChr(pos);
+    let range = from[0] + ':' + format(',')(from[1]);
+    if (samplingDistance > 1) {
+      const to = absToChr(parseInt(pos, 10) + samplingDistance - 1);
+      range += '-' + format(',')(to[1]);
+    }
+    entry.range = range;
+  });
 
   return {
     coverage: coverage,
@@ -711,6 +739,10 @@ const tilesetInfo = (uid) => {
     }
 
     chromInfos[chromSizesUrl] = chromInfo;
+    const chromsizes = chromInfo.cumPositions.map((x) => [
+      x.chr,
+      chromInfo.chromLengths[x.chr],
+    ]);
 
     const retVal = {
       tile_size: TILE_SIZE,
@@ -721,6 +753,7 @@ const tilesetInfo = (uid) => {
       max_width: chromInfo.totalLength,
       min_pos: [0],
       max_pos: [chromInfo.totalLength],
+      chromsizes,
     };
 
     tilesetInfos[uid] = retVal;
@@ -737,18 +770,9 @@ const tile = async (uid, z, x) => {
   const fiberMaxLength = (Object.hasOwn(dataOptions[uid], fiberMaxLength)) ? dataOptions[uid].fiberMaxLength : 30000;
   const fiberStrands = (Object.hasOwn(dataOptions[uid], fiberStrands)) ? dataOptions[uid].fiberStrands : ['+', '-'];
 
-  // console.log(`maxSampleSize ${maxSampleSize}`);
-  // console.log(`dataOptions ${JSON.stringify(dataOptions)}`);
-  // console.log(`trackOptions ${JSON.stringify(trackOptions)}`);
-  // console.log(`trackOptions[${uid}].methylation ${JSON.stringify(trackOptions[uid].methylation)}`);
-  // console.log(`fiberMinLength ${fiberMinLength}`);
-  // console.log(`fiberMaxLength ${fiberMaxLength}`);
-
   const { bamUrl, fastaUrl, chromSizesUrl } = dataConfs[uid];
   const bamFile = bamFiles[bamUrl];
   const sequenceFile = (fastaUrl) ? (sequenceFiles[fastaUrl]) ? sequenceFiles[fastaUrl] : null : null;
-
-  // console.log(`sequenceFile | ${fastaUrl} | ${JSON.stringify(sequenceFile)}`);
 
   return tilesetInfo(uid).then((tsInfo) => {
     const basicSegmentAttributesOnly = false;
@@ -756,7 +780,9 @@ const tile = async (uid, z, x) => {
     const recordPromises = [];
 
     if (tileWidth > maxTileWidth) {
-      // this.errorTextText('Zoomed out too far for this track. Zoomin further to see reads');
+      // this.errorTextText(
+      //   'Zoomed out too far for this track. Zoomin further to see reads',
+      // );
       return new Promise((resolve) => resolve([]));
     }
 
@@ -780,9 +806,9 @@ const tile = async (uid, z, x) => {
         // start of the visible region is within this chromosome
         const fetchOptions = {
           viewAsPairs: areMatesRequired(trackOptions[uid]),
-          maxSampleSize: maxSampleSize || 1000,
-          maxInsertSize: 1000,
-          assemblyName: 'hg38',
+          // maxSampleSize: maxSampleSize || 1000,
+          // maxInsertSize: 1000,
+          // assemblyName: 'hg38',
         };
 
         if (maxX > chromEnd) {
@@ -804,30 +830,16 @@ const tile = async (uid, z, x) => {
                 fetchOptions
               )
               .then((records) => {
-                // if (trackOptions[uid].methylation && trackOptions[uid].methylation.maxSegmentsPerTile) {
-                //   const mappedRecordsWithMaxSegments = records.map((rec) =>
-                //     bamRecordToJson(rec, chromName, cumPositions[i].pos, trackOptions[uid], basicSegmentAttributesOnly),
-                //   ).slice(0, trackOptions[uid].methylation.maxSegmentsPerTile);
-                //   tileValues.set(
-                //     `${uid}.${z}.${x}`,
-                //     tileValues.get(`${uid}.${z}.${x}`).concat(mappedRecordsWithMaxSegments),
-                //   );
-                // }
-                // else {
-                //   const mappedRecords = records.map((rec) =>
-                //     bamRecordToJson(rec, chromName, cumPositions[i].pos, trackOptions[uid], basicSegmentAttributesOnly),
-                //   );
-                //   tileValues.set(
-                //     `${uid}.${z}.${x}`,
-                //     tileValues.get(`${uid}.${z}.${x}`).concat(mappedRecords),
-                //   );
-                // }
-                // console.log(`records retrieved ${JSON.stringify(records.length)} | ${uid}.${z}.${x}`);
                 const mappedRecords = records.map((rec) =>
-                  bamRecordToJson(rec, chromName, cumPositions[i].pos, trackOptions[uid], basicSegmentAttributesOnly),
+                  bamRecordToJson(
+                    rec,
+                    chromName,
+                    cumPositions[i].pos,
+                    trackOptions[uid],
+                    basicSegmentAttributesOnly,
+                  ),
                 );
                 if (trackOptions[uid].methylation || trackOptions[uid].fire) {
-                  // console.log(`filtering for methylation or FIRE data (A) | ${fiberMinLength} | ${fiberMaxLength} | ${fiberStrands}`);
                   const filteredByLengthRecords = mappedRecords.filter((rec) => Math.abs(rec.to - rec.from) >= fiberMinLength && Math.abs(rec.to - rec.from) <= fiberMaxLength);
                   const filteredByStrandsRecords = filteredByLengthRecords.filter((rec) => fiberStrands.includes(rec.strand));
                   const filteredRecords = filteredByStrandsRecords;
@@ -847,7 +859,6 @@ const tile = async (uid, z, x) => {
 
           // handle sequence data, if available
           if (sequenceFile) {
-            // console.log(`A1 | pushing sequenceFile lookup into sequenceTileValues | ${chromName}:${minX - chromStart}-${chromEnd - chromStart}`);
             recordPromises.push(
               sequenceFile
                 .getSequence(
@@ -856,7 +867,6 @@ const tile = async (uid, z, x) => {
                   chromEnd - chromStart,
                 )
                 .then((sequence) => {
-                  // console.log(`A1 | sequence | ${uid}.${z}.${x} | ${minX - chromStart} | ${chromEnd - chromStart} | ${sequence}`);
                   const sequenceRecord = {
                     id: `${chromName}:${minX - chromStart}-${chromEnd - chromStart}`,
                     chrom: chromName,
@@ -879,7 +889,6 @@ const tile = async (uid, z, x) => {
         else {
           const endPos = Math.ceil(maxX - chromStart);
           const startPos = Math.floor(minX - chromStart);
-          // console.log(`fetching ${chromName}:${startPos}-${endPos} | ${JSON.stringify(fetchOptions)}`);
           // the end of the region is within this chromosome
           recordPromises.push(
             bamFile
@@ -896,45 +905,28 @@ const tile = async (uid, z, x) => {
                 fetchOptions,
               )
               .then((records) => {
-                // if (trackOptions[uid].methylation && trackOptions[uid].methylation.maxSegmentsPerTile) {
-                //   const mappedRecordsWithMaxSegments = records.map((rec) =>
-                //     bamRecordToJson(rec, chromName, cumPositions[i].pos, trackOptions[uid]),
-                //   ).slice(0, trackOptions[uid].methylation.maxSegmentsPerTile);
-                //   tileValues.set(
-                //     `${uid}.${z}.${x}`,
-                //     tileValues.get(`${uid}.${z}.${x}`).concat(mappedRecordsWithMaxSegments),
-                //   );
-                // }
-                // else {
-                //   const mappedRecords = records.map((rec) =>
-                //     bamRecordToJson(rec, chromName, cumPositions[i].pos, trackOptions[uid]),
-                //   );
-                //   tileValues.set(
-                //     `${uid}.${z}.${x}`,
-                //     tileValues.get(`${uid}.${z}.${x}`).concat(mappedRecords),
-                //   );
-                // }
-                // console.log(`records retrieved ${JSON.stringify(records.length)} | ${uid}.${z}.${x}`);
                 const mappedRecords = records.map((rec) =>
-                  bamRecordToJson(rec, chromName, cumPositions[i].pos, trackOptions[uid], basicSegmentAttributesOnly),
+                  bamRecordToJson(
+                    rec,
+                    chromName,
+                    cumPositions[i].pos,
+                    trackOptions[uid],
+                    basicSegmentAttributesOnly,
+                  ),
                 );
                 if (trackOptions[uid].methylation) {
-                  // console.log(`filtering for methylation data (B) | ${fiberMinLength} | ${fiberMaxLength} | ${fiberStrands}`);
                   const filteredByLengthRecords = mappedRecords.filter((rec) => Math.abs(rec.to - rec.from) >= fiberMinLength && Math.abs(rec.to - rec.from) <= fiberMaxLength);
                   const filteredByStrandsRecords = filteredByLengthRecords.filter((rec) => fiberStrands.includes(rec.strand));
                   const filteredRecords = filteredByStrandsRecords;
-                  // console.log(`filteredRecords ${filteredRecords.length}`);
                   tileValues.set(
                     `${uid}.${z}.${x}`,
                     tileValues.get(`${uid}.${z}.${x}`).concat(filteredRecords),
                   );
                 }
                 else if (trackOptions[uid].fire) {
-                  // console.log(`filtering for FIRE data (B) | ${fiberMinLength} | ${fiberMaxLength} | ${fiberStrands}`);
                   const filteredByLengthRecords = mappedRecords.filter((rec) => Math.abs(rec.to - rec.from) >= fiberMinLength && Math.abs(rec.to - rec.from) <= fiberMaxLength);
                   const filteredByStrandsRecords = filteredByLengthRecords.filter((rec) => fiberStrands.includes(rec.strand));
                   const filteredRecords = filteredByStrandsRecords;
-                  // console.log(`filteredRecords ${filteredRecords.length}`);
                   tileValues.set(
                     `${uid}.${z}.${x}`,
                     tileValues.get(`${uid}.${z}.${x}`).concat(filteredRecords),
@@ -953,7 +945,6 @@ const tile = async (uid, z, x) => {
           if (sequenceFile) {
             // handle sequence data, if available
             recordPromises.push(
-              // console.log(`A2 | pushing sequenceFile lookup into sequenceTileValues | ${chromName}:${startPos}-${endPos}`);
               sequenceFile
                 .getSequence(
                   chromName,
@@ -961,7 +952,6 @@ const tile = async (uid, z, x) => {
                   endPos,
                 )
                 .then((sequence) => {
-                  // console.log(`A2 | sequence | ${uid}.${z}.${x} | ${startPos} | ${endPos} | ${sequence}`);
                   const sequenceRecord = {
                     id: `${chromName}:${startPos}-${endPos}`,
                     chrom: chromName,
@@ -1005,15 +995,28 @@ const serverFetchTilesDebounced = async (uid, tileIds) => {
   // first let's check if we have a larger tile that contains this one
   for (const tileId of tileIds) {
     let [zoomLevel, tileX] = tileId.split('.');
-    const tilesetInfo = tilesetInfos[uid];
+    let tilesetInfo = tilesetInfos[uid];
     let found = false;
+
+    if (!tilesetInfo) {
+      // This can happen when track options change and a new BAMDataFetcher is created.
+      // We don't have a tileset info but we're fetching a track.
+      tilesetInfo = await serverTilesetInfo(uid);
+    }
 
     const [xStart, xEnd] = tilesetInfoToStartEnd(tilesetInfo, zoomLevel, tileX);
 
     while (zoomLevel > 0) {
+      // Here we're checking if we've already fetched a larger tile.
+      // Because larger tiles are superset of the smaller tiles (in the case of pileups)
+      // if we have the larger tile, we don't need to refetch the smaller tile
       const hereTileId = `${uid}.${zoomLevel}.${tileX}`;
 
       if (tileValues.has(hereTileId)) {
+        // We do have the larger tile.
+        // Let's downsample the reads that would be present in the smaller tile
+        // and squirrel those away until the end of the function when we'll return
+        // them to the requester
         existingTiles[tileId] = tileValues
           .get(hereTileId)
           .filter((x) => xStart < x.to && xEnd > x.from);
@@ -1035,33 +1038,48 @@ const serverFetchTilesDebounced = async (uid, tileIds) => {
   const serverTileIds = toFetchIds.map(
     (x) => `d=${serverInfo.tilesetUid}.${x}`,
   );
-  const url = `${serverInfos[uid].server}/tiles/?${serverTileIds.join('&')}`;
 
-  return authFetch(url, uid)
-    .then((d) => d.json())
-    .then((rt) => {
-      const newTiles = {};
+  const urls = serverTileIds.map(
+    (tileId) => `${serverInfos[uid].server}/tiles/?${tileId}`,
+  );
 
-      for (const tileId of tileIds) {
-        const hereTileId = `${uid}.${tileId}`;
-        const fullTileId = `${serverInfo.tilesetUid}.${tileId}`;
-        if (rt[fullTileId]) {
-          let rowJsonTile = rt[fullTileId];
+  const promises = urls.map((url) => {
+    return authFetch(url, uid)
+      .then((d) => d.json())
+      .then((rt) => {
+        const newTiles = {};
 
-          if (!rt[fullTileId].error) {
-            rowJsonTile = tabularJsonToRowJson(rt[fullTileId]);
+        for (const tileId of tileIds) {
+          const hereTileId = `${uid}.${tileId}`;
+          const fullTileId = `${serverInfo.tilesetUid}.${tileId}`;
+          if (rt[fullTileId]) {
+            let rowJsonTile = rt[fullTileId];
+
+            if (!rt[fullTileId].error) {
+              rowJsonTile = tabularJsonToRowJson(rt[fullTileId]);
+            }
+
+            rowJsonTile.tilePositionId = tileId;
+            newTiles[tileId] = rowJsonTile;
+
+            tileValues.set(hereTileId, rowJsonTile);
           }
-
-          rowJsonTile.tilePositionId = tileId;
-          newTiles[tileId] = rowJsonTile;
-
-          tileValues.set(hereTileId, rowJsonTile);
         }
-      }
 
-      const toRet = { ...existingTiles, ...newTiles };
-      return toRet;
-    });
+        const toRet = { ...newTiles };
+        return toRet;
+      });
+  });
+
+  return Promise.all(promises).then((values) => {
+    let toRet = { ...existingTiles };
+
+    for (let value of values) {
+      toRet = { ...toRet, ...value };
+    }
+
+    return toRet;
+  });
 };
 
 const fetchTilesDebounced = async (uid, tileIds) => {
@@ -1088,9 +1106,7 @@ const fetchTilesDebounced = async (uid, tileIds) => {
     for (let i = 0; i < values.length; i++) {
       const validTileId = validTileIds[i];
       tiles[validTileId] = values[i];
-      try {
-        tiles[validTileId].tilePositionId = validTileId;
-      } catch (e) {}
+      tiles[validTileId].tilePositionId = validTileId;
     }
 
     return tiles;
@@ -1102,6 +1118,191 @@ const fetchTilesDebounced = async (uid, tileIds) => {
 ///////////////////////////////////////////////////
 
 // See segmentsToRows concerning the role of occupiedSpaceInRows
+function assignSectionToRow(
+  section,
+  occupiedSpaceInRows,
+  padding,
+  trackOptions,
+) {
+  const viewAsPairs = trackOptions.viewAsPairs;
+  let segmentFromWithPadding = section.fromWithClipping - padding;
+  let segmentToWithPadding = section.toWithClipping + padding;
+
+  // no row has been assigned - find a suitable row and update the occupied space
+  if (section.row === null || section.row === undefined) {
+    // Go through each row and look if there is space for the segment
+    for (let i = 0; i < occupiedSpaceInRows.length; i++) {
+      if (!occupiedSpaceInRows[i]) {
+        // This row has free space
+        occupiedSpaceInRows[i] = {
+          from: segmentFromWithPadding,
+          to: segmentToWithPadding,
+        };
+        section.row = i;
+        return;
+      }
+      const rowSpaceFrom = occupiedSpaceInRows[i].from;
+      const rowSpaceTo = occupiedSpaceInRows[i].to;
+      if (segmentToWithPadding < rowSpaceFrom) {
+        section.row = i;
+
+        occupiedSpaceInRows[i] = {
+          from: segmentFromWithPadding,
+          to: rowSpaceTo,
+        };
+        return;
+      } else if (segmentFromWithPadding > rowSpaceTo) {
+        section.row = i;
+
+        occupiedSpaceInRows[i] = {
+          from: rowSpaceFrom,
+          to: segmentToWithPadding,
+        };
+        return;
+      }
+    }
+    // There is no space in the existing rows, so add a new one.
+    section.row = occupiedSpaceInRows.length;
+
+    occupiedSpaceInRows.push({
+      from: segmentFromWithPadding,
+      to: segmentToWithPadding,
+    });
+  }
+  // segment already has a row - just update the occupied space
+  else {
+    const assignedRow = section.row;
+    if (occupiedSpaceInRows[assignedRow]) {
+      const rowSpaceFrom = occupiedSpaceInRows[assignedRow].from;
+      const rowSpaceTo = occupiedSpaceInRows[assignedRow].to;
+      occupiedSpaceInRows[assignedRow] = {
+        from: Math.min(segmentFromWithPadding, rowSpaceFrom),
+        to: Math.max(segmentToWithPadding, rowSpaceTo),
+      };
+    } else {
+      occupiedSpaceInRows[assignedRow] = {
+        from: segmentFromWithPadding,
+        to: segmentToWithPadding,
+      };
+    }
+  }
+}
+
+function sectionsToRows(sections, optionsIn, trackOptions) {
+  const { prevRows, padding } = Object.assign(
+    { prevRows: [], padding: 5 },
+    optionsIn || {},
+  );
+  const viewAsPairs = trackOptions.viewAsPairs;
+
+  // The following array contains elements fo the form
+  // occupiedSpaceInRows[i] = {from: 100, to: 110}
+  // This means that in row i, the space from 100 to 110 is occupied and reads cannot be placed there
+  // This array is updated with every section that is added to the scene
+  let occupiedSpaceInRows = [];
+  const sectionIds = new Set(sections.map((x) => x.id));
+
+  // We only need those previous sections, that are in the current sections list
+  // We will assume that prevRows is already sorted by base so we won't modify it
+  const prevSections = prevRows
+    .flat()
+    .filter((section) => sectionIds.has(section.id));
+
+  // If there's prevSections, we'll assume that they're already sorted the way
+  // they should be because any change in the options would have caused a rerender
+
+  for (let i = 0; i < prevSections.length; i++) {
+    // prevSections contains already assigned sections. The function below therefore just
+    // builds the occupiedSpaceInRows array. For this, prevSections does not need to be sorted
+    assignSectionToRow(
+      prevSections[i],
+      occupiedSpaceInRows,
+      padding,
+      trackOptions,
+    );
+  }
+
+  const prevSectionIds = new Set(prevSections.map((x) => x.id));
+  let filteredSections = sections.filter((x) => !prevSectionIds.has(x.id));
+
+  let sortedSections = [];
+  if (trackOptions.sortByBase) {
+    // We need to assign the sections to the rows that intersect the
+    // sorted base first.
+    sortedSections = groupSectionsBySortedBase(
+      filteredSections,
+      trackOptions.sortByBase,
+    );
+
+    for (let section of sortedSections) {
+      assignSectionToRow(section, occupiedSpaceInRows, padding, trackOptions);
+      prevSectionIds.add(section.id);
+    }
+  }
+
+  // Filter again to remove sections which were rendered due to sorting
+  filteredSections = sections.filter((x) => !prevSectionIds.has(x.id));
+
+  let newSections = [];
+  // We need to assign rows only to those sections, that are not in the prevSections list
+
+  if (prevSections.length === 0) {
+    filteredSections.sort(segmentsSort);
+    filteredSections.forEach((section) => {
+      assignSectionToRow(section, occupiedSpaceInRows, padding, trackOptions);
+    });
+    newSections = filteredSections;
+  } else {
+    // We subdivide the sections into those that are left/right of the existing previous segments
+    // Note that prevSections is sorted
+
+    // Use the median middle of the currently occupied space as the cutoff
+    // for left / right reads
+    const mids = [];
+    for (let i = 0; i < occupiedSpaceInRows.length; i++) {
+      const region = occupiedSpaceInRows[i];
+      if (region) {
+        mids.push((region.from + region.to) / 2);
+      }
+    }
+
+    mids.sort();
+    const cutoff = mids[Math.floor(mids.length / 2)];
+
+    const newSectionsLeft = filteredSections.filter(
+      (x) => x.fromWithClipping <= cutoff,
+    );
+    // The sort order for new sections that are appended left is reversed
+    newSectionsLeft.sort((a, b) => b.fromWithClipping - a.fromWithClipping);
+    newSectionsLeft.forEach((section) => {
+      assignSectionToRow(section, occupiedSpaceInRows, padding, trackOptions);
+    });
+
+    const newSectionsRight = filteredSections.filter(
+      (x) => x.fromWithClipping > cutoff,
+    );
+    newSectionsRight.sort((a, b) => a.fromWithClipping - b.fromWithClipping);
+    newSectionsRight.forEach((section) => {
+      assignSectionToRow(section, occupiedSpaceInRows, padding, trackOptions);
+    });
+
+    newSections = newSectionsLeft.concat(
+      prevSections,
+      newSectionsRight,
+      viewAsPairs,
+    );
+  }
+
+  const outputRows = [];
+  for (let i = 0; i < occupiedSpaceInRows.length; i++) {
+    outputRows[i] = newSections
+      .filter((x) => x.row === i)
+      .concat(sortedSections.filter((x) => x.row === i));
+  }
+
+  return outputRows;
+}
+
 function assignSegmentToRow(segment, occupiedSpaceInRows, padding) {
 
   const segmentFromWithPadding = segment.fromWithClipping - padding;
@@ -1272,6 +1473,29 @@ let allIndexesLength = STARTING_INDEXES_LENGTH;
 let allPositions = new Float32Array(allPositionsLength);
 let allColors = new Float32Array(allColorsLength);
 let allIndexes = new Int32Array(allIndexesLength);
+
+// how we sort segments
+const segmentsSort = (a, b) => a.fromWithClipping - b.fromWithClipping;
+
+// A section is a group of segments that should be rendered
+// together on one row. Segments are typically reads whereas
+// Sections are read pairs.
+const createSection = (segments) => {
+  // strands always seem to be mismatched among mates
+  // let strand = segments[0].strand;
+  // for (let i = 0; i < segments.length; i++) {
+  //   if (segments[i].strand != strand) {
+  //     console.log('Mismatched strand in section', segments);
+  //   }
+  // }
+  return {
+    fromWithClipping: Math.min(...segments.map((x) => x.fromWithClipping)),
+    toWithClipping: Math.max(...segments.map((x) => x.toWithClipping)),
+    id: segments.map((x) => x.id.toString()).join('.'),
+    segments: segments.sort(segmentsSort),
+    // strand: segments[0].strand,
+  };
+};
 
 function isEmpty(obj) {
   for (var i in obj) { return false; }
@@ -3888,7 +4112,6 @@ const renderSegments = (
 
     if (trackOptions.methylation && alignCpGEvents) {
       for (const segment of tileValue) {
-        // console.log(`segment ${JSON.stringify(segment)}`);
         for (const mo of segment.methylationOffsets) {
           if (mo.unmodifiedBase === 'C' && segment.strand === '-') {
             mo.offsets = mo.offsets.map(offset => offset - 1);
@@ -3901,21 +4124,15 @@ const renderSegments = (
       allSegments[segment.id] = segment;
     }
 
-    // if (trackOptions.fire) {
-    //   console.log(`${tileId} | ${JSON.stringify(Object.keys(allSegments))}`);
-    // }
-
     const sequenceTileValue = sequenceTileValues.get(`${uid}.${tileId}`);
 
     if (sequenceTileValue && trackOptions.methylation && trackOptions.methylation.highlights) {
-      // console.log(`renderSegments | ${uid} | ${JSON.stringify(tileIds)} | ${JSON.stringify(trackOptions)}`);
       const highlights = Object.keys(trackOptions.methylation.highlights);
       for (const sequence of sequenceTileValue) {
         // allSequences[parseInt(sequence.start)] = sequence.data;
         const absPosStart = parseInt(sequence.start) + parseInt(sequence.chromOffset);
         const seq = sequence.data.toUpperCase();
         for (const highlight of highlights) {
-          // console.log(`highlight ${JSON.stringify(highlight)}`);
           if (highlight !== 'M0A') {
             const highlightUC = highlight.toUpperCase();
             const highlightLength = highlight.length;
@@ -3930,37 +4147,22 @@ const renderSegments = (
             let posnA = seq.indexOf('A');
             let posnT = seq.indexOf('T');
             let posn = Math.min(posnA, posnT);
-            // console.log(`posnA ${posnA} | posnT ${posnT} | posn ${posn}`);
             if (isEmpty(highlightPositions) || !highlightPositions[highlight]) highlightPositions[highlight] = new Array();
             while (posn > -1) {
               highlightPositions[highlight].push(posn + absPosStart + 1); // 1-based indexed positions!
               posnA = seq.indexOf('A', posn + 1);
               posnT = seq.indexOf('T', posn + 1);
               posn = ((posnA !== -1) && (posnT !== -1)) ? Math.min(posnA, posnT) : (posnA === -1) ? posnT : (posnT === -1) ? posnA : -1;
-              // console.log(`posnA ${posnA} | posnT ${posnT} | posn ${posn}`);
             }
-            // console.log(`highlightPositions[${highlight}] ${highlightPositions[highlight]}`);
             ATPositions = new Set([...highlightPositions[highlight]]);
           }
         }
-        // highlights.forEach((highlight) => {
-        //   // console.log(`highlight ${JSON.stringify(highlight)}`);
-        //   const highlightUC = highlight.toUpperCase();
-        //   const highlightLength = highlight.length;
-        //   let posn = seq.indexOf(highlightUC);
-        //   if (isEmpty(highlightPositions) || !highlightPositions[highlight]) highlightPositions[highlight] = new Array();
-        //   while (posn > -1) {
-        //     highlightPositions[highlight].push(posn + absPosStart + 1); // 1-based indexed positions!
-        //     posn = seq.indexOf(highlightUC, posn + highlightLength);
-        //   }
-        // });
       }
     }
   }
 
-  // if (!isEmpty(highlightPositions)) console.log(`highlightPositions ${JSON.stringify(highlightPositions)}`);
-
   let segmentList = Object.values(allSegments);
+
   const drawnSegmentIdentifiers = {
     [originatingTrackId]: {
       methylation: [],
@@ -3973,43 +4175,44 @@ const renderSegments = (
   const fiberMaxLength = (Object.hasOwn(dataOptions[uid], fiberMaxLength)) ? dataOptions[uid].fiberMaxLength : 30000;
   const fiberStrands = (Object.hasOwn(dataOptions[uid], fiberStrands)) ? dataOptions[uid].fiberStrands : ['+', '-'];
 
-  // console.log(`fiberMinLength ${JSON.stringify(fiberMinLength)} | fiberMaxLength ${JSON.stringify(fiberMaxLength)}`);
+  if (trackOptions.minMappingQuality > 0) {
+    segmentList = segmentList.filter(
+      (s) => s.mapq >= trackOptions.minMappingQuality,
+    );
+  }
 
-  // if (dataOptions[uid].methylation) {
-  //   segmentList = segmentList.filter((s) => (s.to - s.from) >= fiberMinLength && (s.to - s.from) <= fiberMaxLength);
-  // }
+  let sections = [];
 
-  // if (trackOptions.minMappingQuality > 0){
-  //   segmentList = segmentList.filter((s) => s.mapq >= trackOptions.minMappingQuality)
-  // }
+  if (areMatesRequired(trackOptions)) {
+    const segmentsByReadName = findMates(segmentList);
+    prepareHighlightedReads(segmentList, trackOptions);
+    sections = Object.values(segmentsByReadName).map(createSection);
+  } else {
+    sections = segmentList.map((x) => createSection([x]));
+  }
 
-  // prepareHighlightedReads(segmentList, trackOptions);
+  // At this point reads are colored correctly, but we only want to align those reads that
+  // are within the visible tiles - not mates that are far away, as this can mess up the alignment
+  let tileMinPos = Number.MAX_VALUE;
+  let tileMaxPos = -Number.MAX_VALUE;
+  const tsInfo = tilesetInfos[uid];
+  tileIds.forEach((id) => {
+    const z = id.split('.')[0];
+    const x = id.split('.')[1];
+    const startEnd = tilesetInfoToStartEnd(tsInfo, +z, +x);
+    tileMinPos = Math.min(tileMinPos, startEnd[0]);
+    tileMaxPos = Math.max(tileMaxPos, startEnd[1]);
+  });
 
-  // if (areMatesRequired(trackOptions) && !clusterDataObj) {
-  //   // At this point reads are colored correctly, but we only want to align those reads that
-  //   // are within the visible tiles - not mates that are far away, as this can mess up the alignment
-  //   let tileMinPos = Number.MAX_VALUE;
-  //   let tileMaxPos = -Number.MAX_VALUE;
-  //   const tsInfo = tilesetInfos[uid];
-  //   for (const id of tileIds) {
-  //     const z = id.split('.')[0];
-  //     const x = id.split('.')[1];
-  //     const startEnd = tilesetInfoToStartEnd(tsInfo, +z, +x);
-  //     tileMinPos = Math.min(tileMinPos, startEnd[0]);
-  //     tileMaxPos = Math.max(tileMaxPos, startEnd[1]);
-  //   }
-  //   // tileIds.forEach((id) => {
-  //   //   const z = id.split('.')[0];
-  //   //   const x = id.split('.')[1];
-  //   //   const startEnd = tilesetInfoToStartEnd(tsInfo, +z, +x);
-  //   //   tileMinPos = Math.min(tileMinPos, startEnd[0]);
-  //   //   tileMaxPos = Math.max(tileMaxPos, startEnd[1]);
-  //   // });
+  for (let i = 0; i < segmentList.length; i++) {
+    const segment = segmentList[i];
 
-  //   segmentList = segmentList.filter(
-  //     (segment) => segment.to >= tileMinPos && segment.from <= tileMaxPos,
-  //   );
-  // }
+    if (segment.to >= tileMinPos && segment.from <= tileMaxPos) {
+      segment.in_bounds = true;
+    } else {
+      segment.in_bounds = false;
+    }
+  }
 
   let [minPos, maxPos] = [Number.MAX_VALUE, -Number.MAX_VALUE];
 
@@ -5968,6 +6171,26 @@ const renderSegments = (
     rows.map((row, i) => {
       // const height = (trackOptions && trackOptions.fire) ? yScale.bandwidth() / 3 : yScale.bandwidth();
       // yTop = yScale(i) + (trackOptions && trackOptions.fire ? height : 0);
+      
+      const genericSegment = {
+        'start': 0,
+        'size': 0,
+        'top': 0,
+        'height': 0,
+        'color': 0,
+        'blocks': [],
+      };
+
+      const genericBlock = {
+        'start': 0,
+        'size': 0,
+        'top': 0,
+        'height': 0,
+        'color': 0,
+      };
+
+      const segmentsToRender = [];
+
       const height = yScale.bandwidth();
       yTop = yScale(i);
       yBottom = yTop + height;
@@ -5981,30 +6204,48 @@ const renderSegments = (
         xLeft = from;
         xRight = to;
 
+        const segmentToRender = Object.assign({}, genericSegment);
+
         if (trackOptions && trackOptions.methylation) {
-          // if (trackOptions.methylation) console.log(`trackOptions.methylation ${JSON.stringify(trackOptions.methylation)} | segment.colorOverride ${segment.colorOverride} | segment.color ${segment.color}`);
-          // if (trackOptions.fire) console.log(`trackOptions.fire ${JSON.stringify(trackOptions.fire)} | segment.colorOverride ${segment.colorOverride} | segment.color ${segment.color}`);
-          addRect(xLeft, yTop, xRight - xLeft, height, segment.colorOverride || segment.color);
-          // drawnSegmentIdentifiers[originatingTrackId].methylation.push(segment.readName);
-          // pileupSegmentsDrawn += 1;
+          // addRect(xLeft, yTop, xRight - xLeft, height, segment.colorOverride || segment.color);
+          segmentToRender.start = xLeft;
+          segmentToRender.top = yTop;
+          segmentToRender.size = xRight - xLeft;
+          segmentToRender.height = height;
+          segmentToRender.color = segment.colorOverride || segment.color;
         }
         else if (trackOptions && trackOptions.indexDHS) {
-          // console.log(`PILEUP_COLOR_IXS.INDEX_DHS_BG ${PILEUP_COLOR_IXS.INDEX_DHS_BG} vs segment.color ${segment.color} or segment.colorOverride ${segment.colorOverride}`);
-          addRect(xLeft, yTop, xRight - xLeft, height, PILEUP_COLOR_IXS.INDEX_DHS_BG);
+          // addRect(xLeft, yTop, xRight - xLeft, height, PILEUP_COLOR_IXS.INDEX_DHS_BG);
+          segmentToRender.start = xLeft;
+          segmentToRender.top = yTop;
+          segmentToRender.size = xRight - xLeft;
+          segmentToRender.height = height;
+          segmentToRender.color = PILEUP_COLOR_IXS.INDEX_DHS_BG;
         }
         else if (trackOptions && trackOptions.tfbs) {
-          addRect(xLeft, yTop + (height * 0.125), xRight - xLeft, height * 0.75, PILEUP_COLOR_IXS.TFBS_SEGMENT_BG);
+          // addRect(xLeft, yTop + (height * 0.125), xRight - xLeft, height * 0.75, PILEUP_COLOR_IXS.TFBS_SEGMENT_BG);
+          segmentToRender.start = xLeft;
+          segmentToRender.top = yTop + (height * 0.125);
+          segmentToRender.size = xRight - xLeft;
+          segmentToRender.height = height * 0.75;
+          segmentToRender.color = PILEUP_COLOR_IXS.TFBS_SEGMENT_BG;
         }
         else if (trackOptions && trackOptions.genericBed) {
           let colorIdx = PILEUP_COLOR_IXS.GENERIC_BED_SEGMENT_BG;
-          // if (trackOptions.genericBed.colors) {
-          //   const colorRgb = trackOptions.genericBed.colors[0];
-          //   console.log(`colorRgb ${colorRgb}`);
-          //   console.log(`PILEUP_COLOR_IXS ${JSON.stringify(PILEUP_COLOR_IXS)}`);
-          //   colorIdx = PILEUP_COLOR_IXS[`GENERIC_BED_${colorRgb}`];
-          //   console.log(`colorIdx ${colorIdx}`);
-          // }
-          addRect(xLeft, yTop + (height * 0.125), xRight - xLeft, height * 0.75, colorIdx);
+          // addRect(xLeft, yTop + (height * 0.125), xRight - xLeft, height * 0.75, colorIdx);
+          segmentToRender.start = xLeft;
+          segmentToRender.top = yTop + (height * 0.125);
+          segmentToRender.size = xRight - xLeft;
+          segmentToRender.height = height * 0.75;
+          segmentToRender.color = colorIdx;
+        }
+        else {
+          // addRect(xLeft, yTop, xRight - xLeft, height, segment.colorOverride || segment.color);
+          segmentToRender.start = xLeft;
+          segmentToRender.top = yTop;
+          segmentToRender.size = xRight - xLeft;
+          segmentToRender.height = height;
+          segmentToRender.color = segment.colorOverride || segment.color;
         }
         // else if (trackOptions && trackOptions.fire) {
         //   addRect(xLeft, yTop, xRight - xLeft, height, PILEUP_COLOR_IXS.FIRE_SEGMENT_BG);
@@ -6026,7 +6267,14 @@ const renderSegments = (
                   if (posn >= segment.from && posn < segment.to) {
                     xLeft = xScale(posn);
                     xRight = xLeft + highlightWidth;
-                    addRect(xLeft, yTop, highlightWidth, height, highlightColor);
+                    // addRect(xLeft, yTop, highlightWidth, height, highlightColor);
+                    const block = Object.assign({}, genericBlock);
+                    block.start = xLeft;
+                    block.top = yTop;
+                    block.size = highlightWidth;
+                    block.height = height;
+                    block.color = highlightColor;
+                    segmentToRender.blocks.push(block);
                   }
                 }
               }
@@ -6046,10 +6294,7 @@ const renderSegments = (
           const minProbabilityThreshold = (trackOptions && trackOptions.methylation && trackOptions.methylation.probabilityThresholdRange) ? trackOptions.methylation.probabilityThresholdRange[0] : 0;
           const maxProbabilityThreshold = (trackOptions && trackOptions.methylation && trackOptions.methylation.probabilityThresholdRange) ? trackOptions.methylation.probabilityThresholdRange[1] + 1 : 256;
 
-          // console.log(`rendering events with ML ranges [${minProbabilityThreshold}, ${maxProbabilityThreshold})`);
-
           let mmSegmentColor = null;
-          // console.log(`segment.methylationOffsets ${JSON.stringify(segment.methylationOffsets)}`);
           for (const mo of segment.methylationOffsets) {
             const offsets = mo.offsets;
             const probabilities = mo.probabilities;
@@ -6087,54 +6332,29 @@ const renderSegments = (
             if (mmSegmentColor) {
               if ((mo.code === 'a') && ('M0A' in highlightPositions)) {
                 const segmentModifiedOffsets = new Set(offsets.filter((d, i) => probabilities[i] < minProbabilityThreshold).map(d => d + segment.from));
-                // console.log(`segmentModifiedOffsets ${JSON.stringify(segmentModifiedOffsets)}`);
                 // const segmentModifiedOffsetMin = Math.min(...segmentModifiedOffsets);
                 // const segmentModifiedOffsetMax = Math.max(...segmentModifiedOffsets);
                 const highlight = 'M0A';
                 const highlightLen = 1;
                 const highlightWidth = Math.max(1, xScale(highlightLen) - xScale(0));
                 const highlightColor = PILEUP_COLOR_IXS.HIGHLIGHTS_MZEROA;
-                // console.log(`highlightColor ${highlightColor}`);
                 // const highlightPosns = highlightPositions[highlight].filter(d => !segmentModifiedOffsets.includes(d));
                 const highlightPosns = [...ATPositions].filter(d => !segmentModifiedOffsets.has(d));
-                // console.log(`highlightPositions[highlight] ${highlightPositions[highlight].length}`);
-                // console.log(`highlightPosns ${highlightPosns.length}`);
                 for (const highlightPosn of highlightPosns) {
                   if ((highlightPosn >= segment.from) && (highlightPosn <= segment.to)) {
                     xLeft = xScale(highlightPosn);
                     xRight = xLeft + highlightWidth;
-                    addRect(xLeft, yTop, highlightWidth, height, highlightColor);
+                    // addRect(xLeft, yTop, highlightWidth, height, highlightColor);
+                    const block = Object.assign({}, genericBlock);
+                    block.start = xLeft;
+                    block.top = yTop;
+                    block.size = highlightWidth;
+                    block.height = height;
+                    block.color = highlightColor;
+                    segmentToRender.blocks.push(block);
                   }
                 }
               }
-              // let offsetIdx = 0;
-              // const width = 1;
-              // for (const offset of offsets) {
-              //   const probability = probabilities[offsetIdx];
-              //   if (probability >= minProbabilityThreshold && probability < maxProbabilityThreshold) {
-              //     // console.log(`segment.from + offset -> | ${segment.from} | ${offset} | ${segment.from + offset}`);
-              //     xLeft = xScale(segment.from + offset); // 'from' uses 1-based index
-              //     // const width = Math.max(1, xScale(offsetLength) - xScale(0));
-              //     // xRight = xLeft + width;
-              //     addRect(xLeft, yTop, width, height, mmSegmentColor);
-              //   }
-              //   offsetIdx++;
-              // }
-
-              // const offsetWidth = 1;
-              // const filteredOffsets = offsets.filter((d, i) => probabilities[i] >= minProbabilityThreshold && probabilities[i] < maxProbabilityThreshold);
-              // for (const filteredOffset of filteredOffsets) {
-              //   xLeft = xScale(segment.from + filteredOffset);
-              //   addRect(xLeft, yTop, offsetWidth, height, mmSegmentColor);
-              // }
-
-              // const offsetWidth = 1;
-              // offsets
-              //   .filter((d, i) => probabilities[i] >= minProbabilityThreshold && probabilities[i] < maxProbabilityThreshold)
-              //   .map(filteredOffset => {
-              //     xLeft = xScale(segment.from + filteredOffset);
-              //     addRect(xLeft, yTop, offsetWidth, height, mmSegmentColor);
-              //   })
 
               const width = Math.max(1, xScale(offsetLength) - xScale(0));
               offsets
@@ -6149,68 +6369,23 @@ const renderSegments = (
                   //   xLeft -= width;
                   // }
                   xRight = xLeft + width;
-                  addRect(xLeft, yTop, width, height, mmSegmentColor);
+                  // addRect(xLeft, yTop, width, height, mmSegmentColor);
+                  const block = Object.assign({}, genericBlock);
+                  block.start = xLeft;
+                  block.top = yTop;
+                  block.size = width;
+                  block.height = height;
+                  block.color = mmSegmentColor;
+                  segmentToRender.blocks.push(block);
                 });
             }
           }
         }
 
         else if (trackOptions && trackOptions.indexDHS) {
-          // console.log(`segment ${JSON.stringify(segment, null, 2)}`);
-          //
-          // apply color to segment, if available
-          //
           const indexDHSMetadata = (trackOptions.indexDHS) ? segment.metadata : {};
-          let defaultSegmentColor = PILEUP_COLOR_IXS.BLACK;
-          if (trackOptions.indexDHS) {
-            defaultSegmentColor = PILEUP_COLOR_IXS[`INDEX_DHS_${indexDHSMetadata.rgb}`];
-            // if ('M0A' in highlightPositions) defaultSegmentColor += 1;
-            // console.log(`indexDHSMetadata ${JSON.stringify(indexDHSMetadata)}`);
-          }
-          // if (segment.substitutions.length === 1) {
-          //   const newSubstitutions = [];
-          //   let offset = 0;
-          //   let length = 1;
-          //   let rangeStart = segment.start;
-          //   let rangeEnd = segment.start + 1;
-          //   newSubstitutions.push({
-          //     pos: offset,
-          //     length: length,
-          //     range: [
-          //       rangeStart,
-          //       rangeEnd,
-          //     ],
-          //     type: 'M',
-          //   });
-          //   offset += length;
-          //   length = segment.to - segment.from - offset - 1;
-          //   rangeStart = rangeEnd;
-          //   rangeEnd = rangeStart + length;
-          //   newSubstitutions.push({
-          //     pos: 1,
-          //     length: length,
-          //     range: [
-          //       rangeStart,
-          //       rangeEnd,
-          //     ],
-          //     type: 'N',
-          //   });
-          //   offset += length;
-          //   length = 1;
-          //   rangeStart = rangeEnd;
-          //   rangeEnd = rangeStart + 1;
-          //   newSubstitutions.push({
-          //     pos: offset,
-          //     length: length,
-          //     range: [
-          //       rangeStart,
-          //       rangeEnd,
-          //     ],
-          //     type: 'M',
-          //   });
-          //   segment.substitutions = newSubstitutions;
-          // }
-          // const width = 1;
+          const segmentColor = PILEUP_COLOR_IXS[`INDEX_DHS_${indexDHSMetadata.rgb}`];
+
           for (const substitution of segment.substitutions) {
             xLeft = xScale(segment.from + substitution.pos);
             const width = Math.max(1, xScale(substitution.length) - xScale(0));
@@ -6218,36 +6393,106 @@ const renderSegments = (
             xRight = xLeft + width;
 
             if (substitution.variant === 'A') {
-              addRect(xLeft, yTop, width, height, PILEUP_COLOR_IXS.A);
+              // addRect(xLeft, yTop, width, height, PILEUP_COLOR_IXS.A);
+              const block = Object.assign({}, genericBlock);
+              block.start = xLeft;
+              block.top = yTop;
+              block.size = width;
+              block.height = height;
+              block.color = PILEUP_COLOR_IXS.A;
+              segmentToRender.blocks.push(block);
             } else if (substitution.variant === 'C') {
-              addRect(xLeft, yTop, width, height, PILEUP_COLOR_IXS.C);
+              // addRect(xLeft, yTop, width, height, PILEUP_COLOR_IXS.C);
+              const block = Object.assign({}, genericBlock);
+              block.start = xLeft;
+              block.top = yTop;
+              block.size = width;
+              block.height = height;
+              block.color = PILEUP_COLOR_IXS.C;
+              segmentToRender.blocks.push(block);
             } else if (substitution.variant === 'G') {
-              addRect(xLeft, yTop, width, height, PILEUP_COLOR_IXS.G);
+              // addRect(xLeft, yTop, width, height, PILEUP_COLOR_IXS.G);
+              const block = Object.assign({}, genericBlock);
+              block.start = xLeft;
+              block.top = yTop;
+              block.size = width;
+              block.height = height;
+              block.color = PILEUP_COLOR_IXS.G;
+              segmentToRender.blocks.push(block);
             } else if (substitution.variant === 'T') {
-              addRect(xLeft, yTop, width, height, PILEUP_COLOR_IXS.T);
+              // addRect(xLeft, yTop, width, height, PILEUP_COLOR_IXS.T);
+              const block = Object.assign({}, genericBlock);
+              block.start = xLeft;
+              block.top = yTop;
+              block.size = width;
+              block.height = height;
+              block.color = PILEUP_COLOR_IXS.T;
+              segmentToRender.blocks.push(block);
             } else if (substitution.type === 'S') {
-              addRect(xLeft, yTop, width, height, PILEUP_COLOR_IXS.S);
+              // addRect(xLeft, yTop, width, height, PILEUP_COLOR_IXS.S);
+              const block = Object.assign({}, genericBlock);
+              block.start = xLeft;
+              block.top = yTop;
+              block.size = width;
+              block.height = height;
+              block.color = PILEUP_COLOR_IXS.S;
+              segmentToRender.blocks.push(block);
             } else if (substitution.type === 'H') {
-              addRect(xLeft, yTop, width, height, PILEUP_COLOR_IXS.H);
+              // addRect(xLeft, yTop, width, height, PILEUP_COLOR_IXS.H);
+              const block = Object.assign({}, genericBlock);
+              block.start = xLeft;
+              block.top = yTop;
+              block.size = width;
+              block.height = height;
+              block.color = PILEUP_COLOR_IXS.H;
+              segmentToRender.blocks.push(block);
             } else if (substitution.type === 'X') {
-              addRect(xLeft, yTop, width, height, PILEUP_COLOR_IXS.X);
+              // addRect(xLeft, yTop, width, height, PILEUP_COLOR_IXS.X);
+              const block = Object.assign({}, genericBlock);
+              block.start = xLeft;
+              block.top = yTop;
+              block.size = width;
+              block.height = height;
+              block.color = PILEUP_COLOR_IXS.X;
+              segmentToRender.blocks.push(block);
             } else if (substitution.type === 'I') {
-              addRect(xLeft, yTop, insertionWidth, height, PILEUP_COLOR_IXS.I);
+              // addRect(xLeft, yTop, insertionWidth, height, PILEUP_COLOR_IXS.I);
+              const block = Object.assign({}, genericBlock);
+              block.start = xLeft;
+              block.top = yTop;
+              block.size = insertionWidth;
+              block.height = height;
+              block.color = PILEUP_COLOR_IXS.I;
+              segmentToRender.blocks.push(block);
             } else if (substitution.type === 'D') {
-              addRect(xLeft, yTop, width, height, PILEUP_COLOR_IXS.D);
+              // addRect(xLeft, yTop, width, height, PILEUP_COLOR_IXS.D);
+              const block = Object.assign({}, genericBlock);
+              block.start = xLeft;
+              block.top = yTop;
+              block.size = width;
+              block.height = height;
+              block.color = PILEUP_COLOR_IXS.D;
+              segmentToRender.blocks.push(block);
 
               // add some stripes
               const numStripes = 6;
               const stripeWidth = 0.1;
               for (let i = 0; i <= numStripes; i++) {
                 const xStripe = xLeft + (i * width) / numStripes;
-                addRect(
-                  xStripe,
-                  yTop,
-                  stripeWidth,
-                  height,
-                  defaultSegmentColor,
-                );
+                // addRect(
+                //   xStripe,
+                //   yTop,
+                //   stripeWidth,
+                //   height,
+                //   PILEUP_COLOR_IXS.BLACK,
+                // );
+                const block = Object.assign({}, genericBlock);
+                block.start = xStripe;
+                block.top = yTop;
+                block.size = stripeWidth;
+                block.height = height;
+                block.color = PILEUP_COLOR_IXS.BLACK;
+                segmentToRender.blocks.push(block);
               }
             }
             else if (substitution.type === 'N') {
@@ -6260,72 +6505,57 @@ const renderSegments = (
               const yMidTop = xMiddle - delWidth / 2;
               const yMidBottom = xMiddle + delWidth / 2;
 
-              addRect(
-                xLeft,
-                yMidBottom,
-                xRight - xLeft,
-                delWidth,
-                defaultSegmentColor,
-              );
-
-              // addRect(
-              //   xLeft,
-              //   yTop,
-              //   xRight - xLeft,
-              //   yMidTop - yTop,
-              //   PILEUP_COLOR_IXS.N,
-              // );
               // addRect(
               //   xLeft,
               //   yMidBottom,
-              //   width,
-              //   yBottom - yMidBottom,
-              //   PILEUP_COLOR_IXS.N,
+              //   xRight - xLeft,
+              //   delWidth,
+              //   segmentColor,
               // );
-
-              // let currPos = xLeft;
-              // const DASH_LENGTH = 6;
-              // const DASH_SPACE = 4;
-
-              // draw dashes
-              // while (currPos <= xRight) {
-              //   // make sure the last dash doesn't overrun
-              //   const dashLength = Math.min(DASH_LENGTH, xRight - currPos);
-
-              //   addRect(
-              //     currPos,
-              //     yMidTop,
-              //     dashLength,
-              //     delWidth,
-              //     PILEUP_COLOR_IXS.N,
-              //   );
-              //   currPos += DASH_LENGTH + DASH_SPACE;
-              // }
-              // allready handled above
+              const block = Object.assign({}, genericBlock);
+              block.start = xLeft;
+              block.top = yMidBottom;
+              block.size = xRight - xLeft;
+              block.height = delWidth;
+              block.color = segmentColor;
+              segmentToRender.blocks.push(block);
             }
             else {
               const indexDHSElementHeight = yScale.bandwidth() * 0.5;
               const indexDHSYTop = yTop + ((yBottom - yTop) * 0.25);
-              addRect(xLeft, indexDHSYTop, width, indexDHSElementHeight, defaultSegmentColor);
+              // addRect(xLeft, indexDHSYTop, width, indexDHSElementHeight, segmentColor);
+              const block = Object.assign({}, genericBlock);
+              block.start = xLeft;
+              block.top = indexDHSYTop;
+              block.size = width;
+              block.height = indexDHSElementHeight;
+              block.color = segmentColor;
+              segmentToRender.blocks.push(block);
             }
           }
+          
           //
           // draw Index DHS summit
           //
-          // if (trackOptions && trackOptions.indexDHS) {
-            // console.log(`PILEUP_COLOR_IXS ${JSON.stringify(PILEUP_COLOR_IXS)}`);
-            const indexDHSElementStart = segment.from - segment.chrOffset;
-            const indexDHSSummitStart = indexDHSMetadata.summit.start;
-            const indexDHSSummitEnd = indexDHSMetadata.summit.end;
-            const indexDHSSummitLength = indexDHSSummitEnd - indexDHSSummitStart;
-            const indexDHSSummitPos = indexDHSSummitStart - indexDHSElementStart;
-            const indexDHSXLeft = xScale(segment.from + indexDHSSummitPos);
-            const indexDHSYTop = yTop;
-            const indexDHSWidth = Math.max(1, xScale(indexDHSSummitLength) - xScale(0));
-            const indexDHSHeight = height;
-            // const indexDHSXRight = indexDHSXLeft + indexDHSWidth;
-            addRect(indexDHSXLeft, indexDHSYTop, indexDHSWidth, indexDHSHeight, defaultSegmentColor);
-          // }
+          
+          const indexDHSElementStart = segment.from - segment.chrOffset;
+          const indexDHSSummitStart = indexDHSMetadata.summit.start;
+          const indexDHSSummitEnd = indexDHSMetadata.summit.end;
+          const indexDHSSummitLength = indexDHSSummitEnd - indexDHSSummitStart;
+          const indexDHSSummitPos = indexDHSSummitStart - indexDHSElementStart;
+          const indexDHSXLeft = xScale(segment.from + indexDHSSummitPos);
+          const indexDHSYTop = yTop;
+          const indexDHSWidth = Math.max(1, xScale(indexDHSSummitLength) - xScale(0));
+          const indexDHSHeight = height;
+          
+          // addRect(indexDHSXLeft, indexDHSYTop, indexDHSWidth, indexDHSHeight, segmentColor);
+          const block = Object.assign({}, genericBlock);
+          block.start = indexDHSXLeft;
+          block.top = indexDHSYTop;
+          block.size = indexDHSWidth;
+          block.height = indexDHSHeight;
+          block.color = segmentColor;
+          segmentToRender.blocks.push(block);
         }
 
         else if (trackOptions && trackOptions.ftFire) {
@@ -6359,7 +6589,14 @@ const renderSegments = (
             const moleculeXLeft = xScale(segment.from + moleculeOffset);
             const moleculeYTop = yTop + ((yBottom - yTop) * (1 - (0.125 * moleculeHeightFactor))) - topCorrection;
             const moleculeHeight = Math.max(1, ftFireElementHeight * moleculeHeightFactor);
-            addRect(moleculeXLeft, moleculeYTop, moleculeWidth, moleculeHeight, moleculeColorIdx);
+            // addRect(moleculeXLeft, moleculeYTop, moleculeWidth, moleculeHeight, moleculeColorIdx);
+            const block = Object.assign({}, genericBlock);
+            block.start = moleculeXLeft;
+            block.top = moleculeYTop;
+            block.size = moleculeWidth;
+            block.height = moleculeHeight;
+            block.color = moleculeColorIdx;
+            segmentToRender.blocks.push(block);
 
             if (segment.strand === '-') {
               nucleosomeOffsets = nucleosomeOffsets.map((d,i) => {
@@ -6368,21 +6605,6 @@ const renderSegments = (
               // nucleosomeLengths = nucleosomeLengths.map((d,i) => {
               //   return d;
               // });
-            }
-
-            // if (segment.readName === '06318b68-46f6-4aa3-a5b3-8b7bad735eb8') {
-            if (segment.readName === '06318b68-46f6-4aa3-a5b3-8b7bad735eb8') {
-              console.log(`segment.start ${segment.start} | segment.length ${segment.length} | segment.strand ${segment.strand}`);
-              // console.log(`segment.as ${segment.as} | segment.al ${segment.al} | segment.aq ${segment.aq}`);
-              // console.log(`segment.mspOffsets | ${JSON.stringify(segment.mspOffsets)}`);
-              console.log(`segment.ns ${segment.ns}`); 
-              console.log(`segment.nl ${segment.nl}`);
-              // console.log(`segment.nucOffsets | ${JSON.stringify(segment.nucOffsets)}`);
-              console.log(`nucleosomeOffsets | ${JSON.stringify(nucleosomeOffsets)}`);
-              console.log(`nucleosomeLengths | ${JSON.stringify(nucleosomeLengths)}`);
-              console.log(`nucleosomeOffsetModifiers | ${JSON.stringify(nucleosomeOffsetModifiers)}`);
-              console.log(`ftFireMetadata ${JSON.stringify(ftFireMetadata)}`);
-              console.log(`moleculeXLeft ${moleculeXLeft}, moleculeYTop ${moleculeYTop}, moleculeWidth ${moleculeWidth}, moleculeColorIdx ${moleculeColorIdx}`);
             }
 
             /** draw nucleosomes */
@@ -6397,7 +6619,14 @@ const renderSegments = (
               const nucleosomeXLeft = xScale(segment.from + nucleosomeOffset);
               // const nucleosomeXLeft = (segment.strand === '+') ? xScale(segment.from + nucleosomeOffset) : xScale(segment.from + (segment.length - nucleosomeOffset - (nucleosomeLength / 2)));
               const nucleosomeYTop = yTop + ((yBottom - yTop) * (1 - (0.125 * nucleosomeHeightFactor))) - topCorrection;
-              addRect(nucleosomeXLeft, nucleosomeYTop, nucleosomeWidth, ftFireElementHeight * nucleosomeHeightFactor, nucleosomeColorIdx);
+              // addRect(nucleosomeXLeft, nucleosomeYTop, nucleosomeWidth, ftFireElementHeight * nucleosomeHeightFactor, nucleosomeColorIdx);
+              const block = Object.assign({}, genericBlock);
+              block.start = nucleosomeXLeft;
+              block.top = nucleosomeYTop;
+              block.size = nucleosomeWidth;
+              block.height = ftFireElementHeight * nucleosomeHeightFactor;
+              block.color = nucleosomeColorIdx;
+              segmentToRender.blocks.push(block);
             }
             /** draw MSPs */
             // for (let i = 0; i < mspOffsets.length; ++i) {
@@ -6410,6 +6639,13 @@ const renderSegments = (
             //   const mspXLeft = xScale(segment.from + mspOffset);
             //   const mspYTop = yTop + ((yBottom - yTop) * (1 - (0.125 * mspHeightFactor))) - topCorrection;
             //   addRect(mspXLeft, mspYTop, mspWidth, ftFireElementHeight * mspHeightFactor, mspColorIdx);
+            //   const block = Object.assign({}, genericBlock);
+            //   block.blockStart = mspXLeft;
+            //   block.blockTop = mspYTop;
+            //   block.blockSize = mspWidth;
+            //   block.blockHeight = ftFireElementHeight * mspHeightFactor;
+            //   block.blockColor = mspColorIdx;
+            //   segmentToRender.blocks.push(block);
             // }
           }
         }
@@ -6418,28 +6654,26 @@ const renderSegments = (
           // let showDims = true;
           const fireMetadata = (trackOptions.fire && trackOptions.fire.metadata) ? segment.metadata : {};
           const fireEnabledCategories = (trackOptions.fire && trackOptions.fire.enabledCategories) ? trackOptions.fire.enabledCategories : [];
-          // console.log(`trackOptions.fire ${JSON.stringify(trackOptions.fire)}`);
-          // console.log(`fireEnabledCategories ${JSON.stringify(fireEnabledCategories)}`);
           // fireMetadata.defaultRGB = '169,169,169';
-          // console.log(`PILEUP_COLOR_IXS ${JSON.stringify(PILEUP_COLOR_IXS)}`);
           let defaultSegmentColor = PILEUP_COLOR_IXS.FIRE_BG;
           // let defaultSegmentColor = PILEUP_COLOR_IXS[`FIRE_${fireMetadata.defaultRGB}`];
           const fireElementHeight = yScale.bandwidth() * 0.25;
           const topCorrection = fireElementHeight * 1.75;
 
-          // console.log(`segment.metadata.colors ${JSON.stringify(segment.metadata.colors)}`);
-
           for (const substitution of segment.substitutions) {
-            // console.log(`segment.from + substitution.pos ${segment.from} + ${substitution.pos} | substitution.length ${substitution.length}`);
             xLeft = xScale(segment.from + substitution.pos);
             const width = Math.max(1, xScale(substitution.length) - xScale(0));
             // const insertionWidth = Math.max(1, xScale(0.1) - xScale(0));
             xRight = xLeft + width;
             const fireYTop = yTop + ((yBottom - yTop) * 0.5) - topCorrection;
-            // console.log(`xLeft ${xLeft} | width ${width} | fireYTop ${fireYTop}`);
-            addRect(xLeft, fireYTop, width, fireElementHeight, defaultSegmentColor);
-
-            // console.log(`xLeft ${xLeft} | fireYTop ${fireYTop} | width ${width} | fireElementHeight ${fireElementHeight} | defaultSegmentColor ${defaultSegmentColor}`);
+            // addRect(xLeft, fireYTop, width, fireElementHeight, defaultSegmentColor);
+            const block = Object.assign({}, genericBlock);
+            block.start = xLeft;
+            block.top = fireYTop;
+            block.size = width;
+            block.height = fireElementHeight;
+            block.color = defaultSegmentColor;
+            segmentToRender.blocks.push(block);
 
             const colorMap = segment.metadata.colors;
 
@@ -6450,11 +6684,6 @@ const renderSegments = (
             const blockColorIdxs = blocks.colors.map(d => PILEUP_COLOR_IXS[`FIRE_${colorMap[d]}`]);
             const blockHeightFactors = blocks.colors.map(d => trackOptions.fire.metadata.itemRGBMap[colorMap[d]].heightFactor);
 
-            // console.log(`blocks ${JSON.stringify(blocks)}`);
-            // console.log(`colorMap ${JSON.stringify(colorMap)}`);
-            // console.log(`blockColors ${JSON.stringify(blockColors)}`);
-            // console.log(`fireEnabledCategories ${JSON.stringify(fireEnabledCategories)}`);
-
             for (let i = 0; i < blocks.count; i++) {
               const blockColorRgb = blockColors[i];
               if (fireEnabledCategories.length === 0 || fireEnabledCategories.includes(blockColorRgb)) {
@@ -6464,16 +6693,216 @@ const renderSegments = (
                 const blockWidth = Math.max(1, xScale(blockSize) - xScale(0));
                 const blockXLeft = xScale(segment.from + blockOffset);
                 const blockYTop = yTop + ((yBottom - yTop) * (1 - (0.125 * blockHeightFactors[i]))) - topCorrection;
-                addRect(blockXLeft, blockYTop, blockWidth, fireElementHeight * blockHeightFactors[i], blockColorIdx);
-                // console.log(`blockXLeft ${blockXLeft} | blockYTop ${blockYTop} | blockWidth ${blockWidth} | fireElementHeight ${fireElementHeight} | blockColorIdx ${blockColorIdx}`);
+                // addRect(blockXLeft, blockYTop, blockWidth, fireElementHeight * blockHeightFactors[i], blockColorIdx);
+                const block = Object.assign({}, genericBlock);
+                block.start = blockXLeft;
+                block.top = blockYTop;
+                block.size = blockWidth;
+                block.height = fireElementHeight * blockHeightFactors[i];
+                block.color = blockColorIdx;
+                segmentToRender.blocks.push(block);
               }
             }
           }
         }
-      });
-    });
 
-    // console.log(`pileupSegmentsDrawn ${pileupSegmentsDrawn}`);
+        else {
+          for (const substitution of segment.substitutions) {
+            xLeft = xScale(segment.from + substitution.pos);
+            const width = Math.max(1, xScale(substitution.length) - xScale(0));
+            const insertionWidth = Math.max(1, xScale(0.1) - xScale(0));
+            xRight = xLeft + width;
+
+            if (substitution.variant === 'A') {
+              // addRect(xLeft, yTop, width, height, PILEUP_COLOR_IXS.A);
+              const block = Object.assign({}, genericBlock);
+              block.start = xLeft;
+              block.top = yTop;
+              block.size = width;
+              block.height = height;
+              block.color = PILEUP_COLOR_IXS.A;
+              segmentToRender.blocks.push(block);
+            } else if (substitution.variant === 'C') {
+              // addRect(xLeft, yTop, width, height, PILEUP_COLOR_IXS.C);
+              const block = Object.assign({}, genericBlock);
+              block.start = xLeft;
+              block.top = yTop;
+              block.size = width;
+              block.height = height;
+              block.color = PILEUP_COLOR_IXS.C;
+              segmentToRender.blocks.push(block);
+            } else if (substitution.variant === 'G') {
+              // addRect(xLeft, yTop, width, height, PILEUP_COLOR_IXS.G);
+              const block = Object.assign({}, genericBlock);
+              block.start = xLeft;
+              block.top = yTop;
+              block.size = width;
+              block.height = height;
+              block.color = PILEUP_COLOR_IXS.G;
+              segmentToRender.blocks.push(block);
+            } else if (substitution.variant === 'T') {
+              // addRect(xLeft, yTop, width, height, PILEUP_COLOR_IXS.T);
+              const block = Object.assign({}, genericBlock);
+              block.start = xLeft;
+              block.top = yTop;
+              block.size = width;
+              block.height = height;
+              block.color = PILEUP_COLOR_IXS.T;
+              segmentToRender.blocks.push(block);
+            } else if (substitution.type === 'S') {
+              // addRect(xLeft, yTop, width, height, PILEUP_COLOR_IXS.S);
+              const block = Object.assign({}, genericBlock);
+              block.start = xLeft;
+              block.top = yTop;
+              block.size = width;
+              block.height = height;
+              block.color = PILEUP_COLOR_IXS.S;
+              segmentToRender.blocks.push(block);
+            } else if (substitution.type === 'H') {
+              // addRect(xLeft, yTop, width, height, PILEUP_COLOR_IXS.H);
+              const block = Object.assign({}, genericBlock);
+              block.start = xLeft;
+              block.top = yTop;
+              block.size = width;
+              block.height = height;
+              block.color = PILEUP_COLOR_IXS.H;
+              segmentToRender.blocks.push(block);
+            } else if (substitution.type === 'X') {
+              // addRect(xLeft, yTop, width, height, PILEUP_COLOR_IXS.X);
+              const block = Object.assign({}, genericBlock);
+              block.start = xLeft;
+              block.top = yTop;
+              block.size = width;
+              block.height = height;
+              block.color = PILEUP_COLOR_IXS.X;
+              segmentToRender.blocks.push(block);
+            } else if (substitution.type === 'I') {
+              // addRect(xLeft, yTop, insertionWidth, height, PILEUP_COLOR_IXS.I);
+              const block = Object.assign({}, genericBlock);
+              block.start = xLeft;
+              block.top = yTop;
+              block.size = insertionWidth;
+              block.height = height;
+              block.color = PILEUP_COLOR_IXS.I;
+              segmentToRender.blocks.push(block);
+            } else if (substitution.type === 'D') {
+              // addRect(xLeft, yTop, width, height, PILEUP_COLOR_IXS.D);
+              const block = Object.assign({}, genericBlock);
+              block.start = xLeft;
+              block.top = yTop;
+              block.size = width;
+              block.height = height;
+              block.color = PILEUP_COLOR_IXS.D;
+              segmentToRender.blocks.push(block);
+
+              // add some stripes
+              const numStripes = 6;
+              const stripeWidth = 0.1;
+              for (let i = 0; i <= numStripes; i++) {
+                const xStripe = xLeft + (i * width) / numStripes;
+                // addRect(
+                //   xStripe,
+                //   yTop,
+                //   stripeWidth,
+                //   height,
+                //   PILEUP_COLOR_IXS.BLACK,
+                // );
+                const block = Object.assign({}, genericBlock);
+                block.start = xStripe;
+                block.top = yTop;
+                block.size = stripeWidth;
+                block.height = height;
+                block.color = PILEUP_COLOR_IXS.BLACK;
+                segmentToRender.blocks.push(block);
+              }
+            } else if (substitution.type === 'N') {
+              // deletions so we're going to draw a thinner line
+              // across
+              const xMiddle = (yTop + yBottom) / 2;
+              const delWidth = Math.min((yBottom - yTop) / 4.5, 1);
+
+              const yMidTop = xMiddle - delWidth / 2;
+              const yMidBottom = xMiddle + delWidth / 2;
+
+              // addRect(
+              //   xLeft,
+              //   yTop,
+              //   xRight - xLeft,
+              //   yMidTop - yTop,
+              //   PILEUP_COLOR_IXS.N,
+              // );
+              const blockNTop = Object.assign({}, genericBlock);
+              blockNTop.start = xLeft;
+              blockNTop.top = yTop;
+              blockNTop.size = xRight - xLeft;
+              blockNTop.height = yMidTop - yTop;
+              blockNTop.color = PILEUP_COLOR_IXS.N;
+              segmentToRender.blocks.push(blockNTop);
+              // addRect(
+              //   xLeft,
+              //   yMidBottom,
+              //   width,
+              //   yBottom - yMidBottom,
+              //   PILEUP_COLOR_IXS.N,
+              // );
+              const blockNBottom = Object.assign({}, genericBlock);
+              blockNBottom.start = xLeft;
+              blockNBottom.top = yMidBottom;
+              blockNBottom.size = width;
+              blockNBottom.height = yBottom - yMidBottom;
+              blockNBottom.color = PILEUP_COLOR_IXS.N;
+              segmentToRender.blocks.push(blockNBottom);
+
+              let currPos = xLeft;
+              const DASH_LENGTH = 6;
+              const DASH_SPACE = 4;
+
+              // draw dashes
+              while (currPos <= xRight) {
+                // make sure the last dash doesn't overrun
+                const dashLength = Math.min(DASH_LENGTH, xRight - currPos);
+
+                // addRect(
+                //   currPos,
+                //   yMidTop,
+                //   dashLength,
+                //   delWidth,
+                //   PILEUP_COLOR_IXS.N,
+                // );
+                const block = Object.assign({}, genericBlock);
+                block.start = currPos;
+                block.top = yMidTop;
+                block.size = dashLength;
+                block.height = delWidth;
+                block.color = PILEUP_COLOR_IXS.N;
+                segmentToRender.blocks.push(block);
+                currPos += DASH_LENGTH + DASH_SPACE;
+              }
+              // already handled above
+            } else {
+              // addRect(xLeft, yTop, width, height, PILEUP_COLOR_IXS.BLACK);
+              const block = Object.assign({}, genericBlock);
+              block.start = xLeft;
+              block.top = yTop;
+              block.size = width;
+              block.height = height;
+              block.color = PILEUP_COLOR_IXS.BLACK;
+              segmentToRender.blocks.push(block);
+            }
+          }
+        }
+
+        segmentsToRender.push(segmentToRender);
+      });
+
+      segmentsToRender.forEach((segment) => {
+        addRect(segment.start, segment.top, segment.size, segment.height, segment.color);
+        segment.blocks.forEach((block) => {
+          addRect(block.start, block.top, block.size, block.height, block.color);
+        });
+      });
+
+    });
   }
 
   const positionsBuffer = allPositions.slice(0, currPosition).buffer;

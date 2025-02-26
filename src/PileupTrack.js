@@ -1,5 +1,5 @@
 import BAMDataFetcher from './bam-fetcher';
-import { spawn, Thread, BlobWorker } from 'threads';
+import { spawn, BlobWorker } from 'threads';
 import {
   ASSEMBLY_ATTR_HG38,
   PILEUP_COLORS,
@@ -29,16 +29,6 @@ const createColorTexture = (PIXI, colors) => {
 
   return [PIXI.Texture.fromBuffer(rgba, colorTexRes, colorTexRes), colorTexRes];
 };
-
-function debounce(callback, wait) {
-  let timeoutId = null;
-  return (...args) => {
-    window.clearTimeout(timeoutId);
-    timeoutId = window.setTimeout(() => {
-      callback.apply(null, args);
-    }, wait);
-  };
-}
 
 function transformY(p, t) {
   return p * t.k + t.y;
@@ -206,8 +196,6 @@ class PileupTrackClass extends HGC.tracks.Tiled1DPixiTrack {
       super(context, options);
       context.dataFetcher.track = this;
 
-      // console.log(`${this.id} | context.dataConfig ${JSON.stringify(context.dataConfig)}`);
-
       this.sessionId = context.dataConfig.sid;
       this.originatingTrackId = JSON.parse(JSON.stringify(this.id));
       this.trackId = this.id;
@@ -216,6 +204,7 @@ class PileupTrackClass extends HGC.tracks.Tiled1DPixiTrack {
       this.worker = worker;
       this.isShowGlobalMousePosition = context.isShowGlobalMousePosition;
       this.valueScaleTransform = HGC.libraries.d3Zoom.zoomIdentity;
+
       this.trackUpdatesAreFrozen = false;
       this.alignCpGEvents = true;
       this.clusterResultsReadyToExport = {};
@@ -245,24 +234,12 @@ class PileupTrackClass extends HGC.tracks.Tiled1DPixiTrack {
 
       this.externalInit(options);
 
-      // console.log(`setting up pileup-track: ${this.id}`);
+      this.setupMonitor();
+    }
 
-      // const debounce = (callback, wait) => {
-      //   let timeoutId = null;
-      //   return (...args) => {
-      //     window.clearTimeout(timeoutId);
-      //     timeoutId = window.setTimeout(() => {
-      //       callback(...args);
-      //     }, wait);
-      //   };
-      // };
-      //
-      // this.monitor = new BroadcastChannel(`pileup-track-viewer`);
-      // this.monitor.onmessage = debounce((event) => this.handlePileupTrackViewerMessage(event.data), 500);
-
+    setupMonitor() {
       this.monitor = new BroadcastChannel(`pileup-track-viewer-${this.sessionId}`);
       this.monitor.onmessage = (event) => this.handlePileupTrackViewerMessage(event.data);
-
       this.bc = new BroadcastChannel(`pileup-track-${this.id}`);
       try {
         this.bc.postMessage({
@@ -272,8 +249,6 @@ class PileupTrackClass extends HGC.tracks.Tiled1DPixiTrack {
           sid: this.sessionId,
         });
       } catch (e) {}
-
-      // this.handlePileupMessage = this.handlePileupTrackViewerMessage;
     }
 
     remove() {
@@ -351,10 +326,6 @@ class PileupTrackClass extends HGC.tracks.Tiled1DPixiTrack {
     }
 
     setUpShaderAndTextures(options) {
-      // console.log(`setUpShaderAndTextures`);
-
-      // console.log(`setUpShaderAndTextures | ${this.id} | options ${JSON.stringify(options)}`);
-
       let colorDict = PILEUP_COLORS;
 
       if (options && options.colorScale && options.colorScale.length == 6) {
@@ -385,10 +356,6 @@ class PileupTrackClass extends HGC.tracks.Tiled1DPixiTrack {
         console.error("colorScale must contain 6 or 11 entries. See https://github.com/higlass/higlass-pileup#options.")
       }
 
-      // console.log(`this.options.methylationTagColor ${this.options.methylationTagColor}`);
-      // if (this.options && this.options.methylationTagColor) {
-      //   colorDict.MM = this.colorToArray(this.options.methylationTagColor);
-      // }
       if (options && options.methylation && options.methylation.categories && options.methylation.colors) {
         options.methylation.categories.forEach((category, index) => {
           if (category.unmodifiedBase === 'A' && category.code === 'a' && category.strand === '+') {
@@ -428,7 +395,6 @@ class PileupTrackClass extends HGC.tracks.Tiled1DPixiTrack {
         const indexDHSColorDict = indexDHSColors(options);
         colorDict = {...colorDict, ...indexDHSColorDict};
         if (options.indexDHS.backgroundColor) {
-          // console.log(`[PileupTrack] options.indexDHS.backgroundColor ${options.indexDHS.backgroundColor}`);
           colorDict.INDEX_DHS_BG = this.colorToArray(options.indexDHS.backgroundColor);
         }
       }
@@ -440,7 +406,6 @@ class PileupTrackClass extends HGC.tracks.Tiled1DPixiTrack {
         const fireColorDict = fireColors(options);
         colorDict = {...colorDict, ...fireColorDict};
         if (options.fire.metadata && options.fire.metadata.backgroundColor) {
-          // console.log(`[PileupTrack] options.fire.metadata.backgroundColor ${options.fire.metadata.backgroundColor}`);
           colorDict.FIRE_BG = this.colorToArray(options.fire.metadata.backgroundColor);
         }
       }
@@ -452,7 +417,6 @@ class PileupTrackClass extends HGC.tracks.Tiled1DPixiTrack {
         const ftFireColorDict = ftFireColors(options);
         colorDict = {...colorDict, ...ftFireColorDict};
         if (options.ftFire.metadata && options.ftFire.metadata.backgroundColor) {
-          // console.log(`[PileupTrack] options.ftFire.metadata.backgroundColor ${options.ftFire.metadata.backgroundColor}`);
           colorDict.FIRE_BG = this.colorToArray(options.ftFire.metadata.backgroundColor);
         }
       }
@@ -823,11 +787,24 @@ varying vec4 vColor;
         this.externalInit(options);
       }
 
+      // Check if rows need to be recalculated
+      if (Object.hasOwn(this.options, 'sortByBase')) {
+        if (
+          JSON.stringify(this.prevOptions.sortByBase) !==
+          JSON.stringify(this.options.sortByBase)
+        ) {
+          // Base sorting has changed so we need to recalculate the rows
+          this.prevRows = {};
+        }
+      }
+
       this.updateExistingGraphics();
       this.prevOptions = Object.assign({}, options);
     }
 
     exportSignalMatrices() {
+      this.loadingText.text = 'Exporting signal matrices...';
+
       try {
         this.bc.postMessage({
           state: 'export_signal_matrices_start',
@@ -879,8 +856,6 @@ varying vec4 vColor;
               this.uidTrackElementMidpointExportData = null;
             }
 
-            // console.log(`toExport ${JSON.stringify(toExport)}`);
-
             try {
               this.bc.postMessage({
                 state: 'export_signal_matrices_end',
@@ -895,6 +870,8 @@ varying vec4 vColor;
     }
 
     exportTFBSOverlaps() {
+      this.loadingText.text = 'Exporting TFBS overlaps...';
+
       try {
         this.bc.postMessage({
           state: 'export_tfbs_overlaps_start',
@@ -960,6 +937,8 @@ varying vec4 vColor;
     }
 
     exportIndexDHSOverlaps() {
+      this.loadingText.text = 'Exporting Index DHS overlaps...';
+
       try {
         this.bc.postMessage({
           state: 'export_indexDHS_overlaps_start',
@@ -1025,6 +1004,8 @@ varying vec4 vColor;
     }
 
     exportUidTrackElements() {
+      this.loadingText.text = 'Exporting UID track overlaps...';
+
       try {
         this.bc.postMessage({
           state: 'export_uid_track_element_midpoint_start',
@@ -1048,10 +1029,6 @@ varying vec4 vColor;
             this.uidTrackElementMidpointExportData,
           )
           .then((toExport) => {
-            // console.log(`--------`);
-            // console.log(`toExport ${JSON.stringify(toExport)}`);
-            // console.log(`uidTrackElementMidpointExportData ${JSON.stringify(this.uidTrackElementMidpointExportData)}`);
-
             if (Object.hasOwn(toExport, 'overlaps') && toExport.overlaps.length > 0) {
               if (this.clusterData) {
                 this.clusterData = null;
@@ -1090,9 +1067,7 @@ varying vec4 vColor;
               // expand search area and try again, if within bounds
               // else, reset data structures and return with no results
               const chrAttr = ASSEMBLY_ATTR_HG38.filter((x) => this.uidTrackElementMidpointExportData.range.left.chrom === x.refName);
-              // console.log(`chrAttr ${JSON.stringify(chrAttr)}`);
               const chrLen = chrAttr[0]['length'];
-              // console.log(`chrLen ${JSON.stringify(chrLen)}`);
               this.uidTrackElementMidpointExportData.rangeExtension *= 2;
               this.uidTrackElementMidpointExportData.range.left.start = Math.max(0, this.uidTrackElementMidpointExportData.range.left.start - this.uidTrackElementMidpointExportData.rangeExtension);
               this.uidTrackElementMidpointExportData.range.right.stop = Math.min(chrLen, this.uidTrackElementMidpointExportData.range.right.stop + this.uidTrackElementMidpointExportData.rangeExtension);
@@ -1137,7 +1112,8 @@ varying vec4 vColor;
     }
 
     exportBED12Layout() {
-      // console.log(`exportBED12Layout called`);
+      this.loadingText.text = 'Exporting BED12 formatted data...';
+
       try {
         this.bc.postMessage({
           state: 'export_bed12_start',
@@ -1161,8 +1137,6 @@ varying vec4 vColor;
             this.bed12ExportData,
           )
           .then((toExport) => {
-            // console.log(`toExport ${JSON.stringify(toExport)}`);
-
             if (this.clusterData) {
               this.clusterData = null;
             }
@@ -1201,11 +1175,9 @@ varying vec4 vColor;
     }
 
     updateExistingGraphics(skip) {
-      // if (this.id === 'd2_stim_sequel.fire.061324') console.log(`updateExistingGraphics (start) | ${this.id}`);
+      this.loadingText.text = 'Rendering...';
 
       if ((this.trackUpdatesAreFrozen) && (this.options.fire || this.options.ftFire || this.options.methylation)) return;
-
-      // if (this.id === 'd2_stim_sequel.fire.061324') console.log(`updateExistingGraphics (post-start) | ${this.id}`);
 
       const updateExistingGraphicsStart = performance.now();
       if (!this.maxTileWidthReached) {
@@ -1220,7 +1192,6 @@ varying vec4 vColor;
         } catch (e) {}
       }
       else {
-        // console.log(`updateExistingGraphics (A) | ${this.id}`);
         this.worker.then((tileFunctions) => {
           tileFunctions
             .renderSegments(
@@ -1238,8 +1209,6 @@ varying vec4 vColor;
               this.fireIdentifierData,
             )
             .then((toRender) => {
-              // console.log(`toRender (maxTileWidthReached) ${JSON.stringify(toRender)}`);
-
               if (
                 this.segmentGraphics
               ) {
@@ -1256,7 +1225,6 @@ varying vec4 vColor;
                 sid: this.sessionId,
                 elapsedTime: elapsedTimeA,
               };
-              // console.log(`${JSON.stringify(msg)}`);
               try {
                 this.bc.postMessage(msg);
               } catch (e) {}
@@ -1265,7 +1233,6 @@ varying vec4 vColor;
         return;
       }
 
-      // if (this.id === 'd2_stim_sequel.fire.061324') console.log(`updateExistingGraphics (B1) | ${this.id}`);
       const fetchedTileIds = new Set(Object.keys(this.fetchedTiles));
       if (!eqSet(this.visibleTileIds, fetchedTileIds)) {
         this.updateLoadingText();
@@ -1273,31 +1240,17 @@ varying vec4 vColor;
       }
 
       // Prevent multiple renderings with the same tiles. This can happen when multiple new tiles come in at once
-      // if (this.id === 'd2_stim_sequel.fire.061324') console.log(`updateExistingGraphics (B2) | ${this.id} | fetchedTileIds ${JSON.stringify(fetchedTileIds)}`);
       if (eqSet(this.previousTileIdsUsedForRendering, fetchedTileIds)) {
         if (!skip) return;
       }
       this.previousTileIdsUsedForRendering = fetchedTileIds;
 
-      // if (this.id === 'd2_stim_sequel.fire.061324') console.log(`updateExistingGraphics (B2+) | ${this.id}`);
-
       const fetchedTileKeys = Object.keys(this.fetchedTiles);
-
-      // if (this.id === 'd2_stim_sequel.fire.061324') console.log(`fetchedTileKeys ${JSON.stringify(fetchedTileKeys)}`);
-
-      for (const fetchedTileKey of fetchedTileKeys) {
-        this.fetching.delete(fetchedTileKey);
-        this.rendering.add(fetchedTileKey);
-      }
-
-      // fetchedTileKeys.forEach((x) => {
-      //   this.fetching.delete(x);
-      //   this.rendering.add(x);
-      // });
-
+      fetchedTileKeys.forEach((x) => {
+        this.fetching.delete(x);
+        this.rendering.add(x);
+      });
       this.updateLoadingText();
-
-      // console.log(`updateExistingGraphics (B3) | ${this.id}`);
 
       this.worker.then((tileFunctions) => {
         tileFunctions
@@ -1317,12 +1270,7 @@ varying vec4 vColor;
             this.fireIdentifierData,
           )
           .then((toRender) => {
-            // if (this.id === 'd2_stim_sequel.fire.061324') console.log(`toRender.tileIds ${JSON.stringify(toRender.tileIds)}`);
-
-            if (!toRender)
-              return;
-
-            // if (this.id === 'd2_stim_sequel.fire.061324') console.log(`toRender ${JSON.stringify(toRender)}`);
+            if (!toRender) return;
 
             if (this.fireIdentifierData) {
               this.fireIdentifierData = null;
@@ -1330,7 +1278,6 @@ varying vec4 vColor;
 
             if (toRender.clusterResultsToExport) {
               this.clusterResultsReadyToExport[this.id] = true;
-              // if (this.id === 'd2_stim_sequel.fire.061324')  console.log(`[higlass-pileup] toRender.clusterResultsToExport ${JSON.stringify(toRender.clusterResultsToExport)}`);
               try {
                 this.bc.postMessage({
                   state: 'export_subregion_clustering_results',
@@ -1358,13 +1305,9 @@ varying vec4 vColor;
 
             this.loadingText.visible = false;
 
-            for (const fetchedTileKey of fetchedTileKeys) {
-              this.rendering.delete(fetchedTileKey);
-            }
-            // fetchedTileKeys.forEach((x) => {
-            //   this.rendering.delete(x);
-            // });
-
+            fetchedTileKeys.forEach((x) => {
+              this.rendering.delete(x);
+            });
             this.updateLoadingText();
 
             if (this.maxTileWidthReached) {
@@ -1425,22 +1368,17 @@ varying vec4 vColor;
             if (this.loadMates) {
               this.readsById = {};
               for (let key in this.prevRows) {
+                this.prevRows[key].rows.forEach((row) => {
+                  row.forEach((section) => {
+                    section.segments.forEach((segment) => {
+                      if (segment.id in this.readsById) return;
 
-                for (const row of this.prevRows[key].rows) {
-                  for (const segment of row) {
-                    if (segment.id in this.readsById) return;
-                    this.readsById[segment.id] = segment;
-                    this.readsById[segment.id]['groupKey'] = key;
-                  }
-                }
-                // this.prevRows[key].rows.forEach((row) => {
-                //   row.forEach((segment) => {
-                //     if (segment.id in this.readsById) return;
-                //     this.readsById[segment.id] = segment;
-                //     // Will be needed later in the mouseover to determine the correct yPos for the mate
-                //     this.readsById[segment.id]['groupKey'] = key;
-                //   });
-                // });
+                      this.readsById[segment.id] = segment;
+                      // Will be needed later in the mouseover to determine the correct yPos for the mate
+                      this.readsById[segment.id]['groupKey'] = key;
+                    });
+                  });
+                });
               }
             }
 
@@ -1533,10 +1471,6 @@ varying vec4 vColor;
               this.signalMatrixExportData = null;
             }
 
-            // if (this.fireIdentifierData) {
-            //   this.fireIdentifierData = null;
-            // }
-
             const updateExistingGraphicsEndC = performance.now();
             const elapsedTimeC = updateExistingGraphicsEndC - updateExistingGraphicsStart;
             const msg = {
@@ -1546,7 +1480,6 @@ varying vec4 vColor;
               sid: this.sessionId,
               elapsedTime: elapsedTimeC,
             };
-            // console.log(`${JSON.stringify(msg)}`);
             try {
               this.bc.postMessage(msg);
             } catch (e) {}
@@ -1729,6 +1662,33 @@ varying vec4 vColor;
       requestAnimationFrame(this.animate);
     }
 
+    contextMenuItems(trackX, trackY) {
+      /* Get a list of context menu items to display and the actions
+         to take */
+
+      // This should return items like this:
+      return [
+        {
+          label: 'Sort by base',
+          onClick: (evt, onTrackOptionsChanged) => {
+            // The onTrackOptionsChanged handler will handle any changes
+            // to the track's options that are triggered in this event.
+            // The only thing that needs to be passed is the new option being
+            // passed
+
+            const currPos = Math.floor(this._xScale.invert(trackX));
+            const chrPos = posToChrPos(currPos, this.tilesetInfo.chromsizes);
+            onTrackOptionsChanged({
+              sortByBase: {
+                chr: chrPos[0],
+                pos: chrPos[1],
+              },
+            });
+          },
+        },
+      ];
+    }
+
     getMouseOverHtml(trackX, trackYIn, isShiftDown) {
       this.mouseOverGraphics.clear();
       requestAnimationFrame(this.animate);
@@ -1739,19 +1699,8 @@ varying vec4 vColor;
 
       if (this.maxTileWidthReached) return;
 
-      // const trackY = this.valueScaleTransform.invert(track)
-      // this.mouseOverGraphics.clear();
-
       // Prevents 'stuck' read outlines when hovering quickly
       // requestAnimationFrame(this.animate);
-
-      // const msg = {
-      //   state: 'mouseover',
-      //   msg: 'mouseover event',
-      //   uid: this.id,
-      //   sid: this.sessionId,
-      // };
-      // this.monitor.postMessage(msg);
 
       const trackY = invY(trackYIn, this.valueScaleTransform);
 
@@ -1815,317 +1764,246 @@ varying vec4 vColor;
                     this.outlineMate(read, yScaleBand);
                   }
 
-                  const insertSizeHtml = this.getInsertSizeMouseoverHtml(read);
-                  const chimericReadHtml = read.mate_ids.length > 1 ? `<span style="color:red;">Chimeric alignment</span><br>`: ``;
+                  const insertSizeHtml = this.getInsertSizeMouseoverHtml(
+                    read,
+                  );
+                  const chimericReadHtml =
+                    read.mate_ids.length > 1
+                      ? `<span style="color:red;">Chimeric alignment</span><br>`
+                      : ``;
 
                   let mappingOrientationHtml = ``;
                   if (read.mappingOrientation) {
                     let style = ``;
                     if (read.colorOverride) {
-                      const color = Object.keys(PILEUP_COLORS)[read.colorOverride];
-                      const htmlColor = this.colorArrayToString(PILEUP_COLORS[color]);
+                      const color = Object.keys(PILEUP_COLORS)[
+                        read.colorOverride
+                      ];
+                      const htmlColor = this.colorArrayToString(
+                        PILEUP_COLORS[color],
+                      );
                       style = `style="color:${htmlColor};"`;
                     }
                     mappingOrientationHtml = `<span ${style}> Mapping orientation: ${read.mappingOrientation}</span><br>`;
                   }
 
-                  // let mouseOverHtml =
-                  //   `Name: ${read.readName}<br>` +
-                  //   `Position: ${read.chrName}:${
-                  //     read.from - read.chrOffset
-                  //   }<br>` +
-                  //   `Read length: ${read.to - read.from}<br>` +
-                  //   `MAPQ: ${read.mapq}<br>` +
-                  //   `Strand: ${read.strand}<br>` +
-                  //   insertSizeHtml +
-                  //   chimericReadHtml +
-                  //   mappingOrientationHtml;
+                  let mouseOverHtml =
+                    `Name: ${read.readName}<br>` +
+                    `Position: ${read.chrName}:${
+                      read.from - read.chrOffset
+                    }<br>` +
+                    `Read length: ${read.to - read.from}<br>` +
+                    `MAPQ: ${read.mapq}<br>` +
+                    `Strand: ${read.strand}<br>` +
+                    insertSizeHtml +
+                    chimericReadHtml +
+                    mappingOrientationHtml;
 
-                  // if (nearestSub && nearestSub.type) {
-                  //   mouseOverHtml += `Nearest operation: ${cigarTypeToText(
-                  //     nearestSub.type,
-                  //   )} (${nearestSub.length})`;
-                  // } else if (nearestSub && nearestSub.variant) {
-                  //   mouseOverHtml += `Nearest operation: ${nearestSub.base} &rarr; ${nearestSub.variant}`;
-                  // }
+                  if (nearestSub && nearestSub.type) {
+                    mouseOverHtml += `Nearest operation: ${cigarTypeToText(
+                      nearestSub.type,
+                    )} (${nearestSub.length})`;
+                  } else if (nearestSub && nearestSub.variant) {
+                    mouseOverHtml += `Nearest operation: ${nearestSub.base} &rarr; ${nearestSub.variant}`;
+                  }
 
-                  const dataX = this._xScale.invert(trackX);
-                  let position = null;
-                  let positionText = null;
-                  let eventText = null;
-                  let eventProbability = null;
-                  
-                  if (this.options.chromInfo) {
-                    const atcX = HGC.utils.absToChr(dataX, this.options.chromInfo);
-                    const chrom = atcX[0];
-                    position = Math.ceil(atcX[1]);
-                    positionText = `${chrom}:${position}`;
-                    const methylationOffset = position - (read.from - read.chrOffset);
-                    for (const mo of read.methylationOffsets) {
-                      const moQuery = mo.offsets.indexOf(methylationOffset);
-                      // if (eventText && eventProbability) break;
-                      if (moQuery !== -1) {
-                        // console.log(`mo @ ${methylationOffset} ${moQuery} | ${JSON.stringify(mo)} ${mo.unmodifiedBase} ${mo.strand} ${mo.code} ${mo.probabilities[moQuery]}`);
-                        const candidateEventProbability = parseInt(mo.probabilities[moQuery]);
-                        if (eventProbability && eventProbability < candidateEventProbability) {
-                          eventProbability = candidateEventProbability;
-                          eventText = ((mo.unmodifiedBase === 'A') || (mo.unmodifiedBase === 'T')) ? 'm6A' : ((mo.unmodifiedBase === 'C') && mo.code === 'm') ? '5mC' : '5hmC';
-                        }
-                        else if (!eventProbability) {
-                          if (candidateEventProbability >= this.options.methylation.probabilityThresholdRange[0]) {
+                  // if this pileup track is rendering generic BAM reads, skip custom mouseover HTML
+                  if (Object.hasOwn(this.options, 'methylation') || Object.hasOwn(this.options, 'indexDHS') || Object.hasOwn(this.options, 'tfbs') || Object.hasOwn(this.options, 'fire') || Object.hasOwn(this.options, 'ftFire') || Object.hasOwn(this.options, 'genericBed')) {
+                    const dataX = this._xScale.invert(trackX);
+                    let position = null;
+                    let positionText = null;
+                    let eventText = null;
+                    let eventProbability = null;
+                    
+                    if (this.options.chromInfo) {
+                      const atcX = HGC.utils.absToChr(dataX, this.options.chromInfo);
+                      const chrom = atcX[0];
+                      position = Math.ceil(atcX[1]);
+                      positionText = `${chrom}:${position}`;
+                      const methylationOffset = position - (read.from - read.chrOffset);
+                      for (const mo of read.methylationOffsets) {
+                        const moQuery = mo.offsets.indexOf(methylationOffset);
+                        // if (eventText && eventProbability) break;
+                        if (moQuery !== -1) {
+                          const candidateEventProbability = parseInt(mo.probabilities[moQuery]);
+                          if (eventProbability && eventProbability < candidateEventProbability) {
                             eventProbability = candidateEventProbability;
                             eventText = ((mo.unmodifiedBase === 'A') || (mo.unmodifiedBase === 'T')) ? 'm6A' : ((mo.unmodifiedBase === 'C') && mo.code === 'm') ? '5mC' : '5hmC';
+                          }
+                          else if (!eventProbability) {
+                            if (candidateEventProbability >= this.options.methylation.probabilityThresholdRange[0]) {
+                              eventProbability = candidateEventProbability;
+                              eventText = ((mo.unmodifiedBase === 'A') || (mo.unmodifiedBase === 'T')) ? 'm6A' : ((mo.unmodifiedBase === 'C') && mo.code === 'm') ? '5mC' : '5hmC';
+                            }
                           }
                         }
                       }
                     }
-                  }
 
-                  let output = `<div class="track-mouseover-menu-table">`;
+                    let output = `<div class="track-mouseover-menu-table">`;
 
-                  if (positionText) {
-                    output += `
-                    <div class="track-mouseover-menu-table-item">
-                      <label for="position" class="track-mouseover-menu-table-item-label">Position</label>
-                      <div name="position" class="track-mouseover-menu-table-item-value">${positionText}</div>
-                    </div>
-                    `;
-                  }
+                    if (positionText) {
+                      output += `
+                      <div class="track-mouseover-menu-table-item">
+                        <label for="position" class="track-mouseover-menu-table-item-label">Position</label>
+                        <div name="position" class="track-mouseover-menu-table-item-value">${positionText}</div>
+                      </div>
+                      `;
+                    }
 
-                  if (eventText && eventProbability) {
-                    output += `
-                    <div class="track-mouseover-menu-table-item">
-                      <label for="eventType" class="track-mouseover-menu-table-item-label">Event</label>
-                      <div name="eventType" class="track-mouseover-menu-table-item-value">${eventText}</div>
-                    </div>
-                    <div class="track-mouseover-menu-table-item">
-                      <label for="eventProbability" class="track-mouseover-menu-table-item-label">Probability (ML)</label>
-                      <div name="eventProbability" class="track-mouseover-menu-table-item-value">${eventProbability}</div>
-                    </div>
-                    `;
-                  }
+                    if (eventText && eventProbability) {
+                      output += `
+                      <div class="track-mouseover-menu-table-item">
+                        <label for="eventType" class="track-mouseover-menu-table-item-label">Event</label>
+                        <div name="eventType" class="track-mouseover-menu-table-item-value">${eventText}</div>
+                      </div>
+                      <div class="track-mouseover-menu-table-item">
+                        <label for="eventProbability" class="track-mouseover-menu-table-item-label">Probability (ML)</label>
+                        <div name="eventProbability" class="track-mouseover-menu-table-item-value">${eventProbability}</div>
+                      </div>
+                      `;
+                    }
 
-                  // let cellLineText = null;
-                  // if (this.options.methylation && this.options.methylation.group && this.options.methylation.set) {
-                  //   groupText = `${this.options.methylation.group}/${this.options.methylation.set}`;
-                  //   if (this.options.methylation.haplotype) {
-                  //     groupText += ` (${this.options.methylation.haplotype})`;
-                  //   }
-                  // }
-
-                  // let cellLineText = null;
-                  // if (this.options.methylation && this.options.methylation.group) {
-                  //   cellLineText = `${this.options.methylation.group}`;
-                  // }
-
-                  // if (cellLineText) {
-                  //   output += `
-                  //   <div class="track-mouseover-menu-table-item">
-                  //     <label for="cell_line" class="track-mouseover-menu-table-item-label">Cell line</label>
-                  //     <div name="cell_line" class="track-mouseover-menu-table-item-value">${cellLineText}</div>
-                  //   </div>
-                  //   `;
-                  // }
-
-                  // let conditionText = null;
-                  // if (this.options.methylation && this.options.methylation.set) {
-                  //   conditionText = `${this.options.methylation.set}`;
-                  // }
-
-                  // if (conditionText) {
-                  //   output += `
-                  //   <div class="track-mouseover-menu-table-item">
-                  //     <label for="condition" class="track-mouseover-menu-table-item-label">Condition</label>
-                  //     <div name="condition" class="track-mouseover-menu-table-item-value">${conditionText}</div>
-                  //   </div>
-                  //   `;
-                  // }
-
-                  // let donorText = null;
-                  // if (this.options.methylation && this.options.methylation.donor) {
-                  //   donorText = `${this.options.methylation.donor}`;
-                  // }
-
-                  // if (donorText) {
-                  //   output += `
-                  //   <div class="track-mouseover-menu-table-item">
-                  //     <label for="donor" class="track-mouseover-menu-table-item-label">Donor</label>
-                  //     <div name="donor" class="track-mouseover-menu-table-item-value">${donorText}</div>
-                  //   </div>
-                  //   `;
-                  // }
-
-                  // let haplotypeText = null;
-                  // if (this.options.methylation && this.options.methylation.haplotype) {
-                  //   haplotypeText = `${this.options.methylation.haplotype}`;
-                  // }
-
-                  // if (haplotypeText) {
-                  //   output += `
-                  //   <div class="track-mouseover-menu-table-item">
-                  //     <label for="haplotype" class="track-mouseover-menu-table-item-label">Haplotype</label>
-                  //     <div name="haplotype" class="track-mouseover-menu-table-item-value">${haplotypeText}</div>
-                  //   </div>
-                  //   `;
-                  // }
-
-                  if (this.options.genericBed) {
-                    const genericBedNameLabel = 'Name';
-                    const genericBedNameValue = (read.readName !== '.') ? read.readName : this.options.name;
-                    output += `<div class="track-mouseover-menu-table-item">
-                      <label for="readName" class="track-mouseover-menu-table-item-label">${genericBedNameLabel}</label>
-                      <div name="readName" class="track-mouseover-menu-table-item-value">${genericBedNameValue}</div>
-                    </div>`;
-                  }
-
-                  else if (this.options.tfbs) {
-                    const tfbsValue = read.readName;
-                    const [tfbsClusterName, tfbsModelName] = tfbsValue.split('%%');
-                    const tfbsClusterNameLabel = 'Cluster';
-                    output += `<div class="track-mouseover-menu-table-item">
-                      <label for="tfbs" class="track-mouseover-menu-table-item-label">${tfbsClusterNameLabel}</label>
-                      <div name="tfbs" class="track-mouseover-menu-table-item-value">${tfbsClusterName}</div>
-                    </div>`;
-                    const tfbsModelNameLabel = 'Model';
-                    output += `<div class="track-mouseover-menu-table-item">
-                      <label for="tfbs" class="track-mouseover-menu-table-item-label">${tfbsModelNameLabel}</label>
-                      <div name="tfbs" class="track-mouseover-menu-table-item-value">${tfbsModelName}</div>
-                    </div>`;
-                  }
-
-                  else if (this.options.indexDHS) {
-                    const readNameLabel = 'Index DHS';
-                    const readNameValue = `${read.readName} | ${this.options.name}`;
-                    output += `<div class="track-mouseover-menu-table-item">
-                      <label for="readName" class="track-mouseover-menu-table-item-label">${readNameLabel}</label>
-                      <div name="readName" class="track-mouseover-menu-table-item-value">${readNameValue}</div>
-                    </div>`;
-                  }
-
-                  else {
-                    const readNameLabel = 'Name';
-                    const readNameValue = read.readName;
-                    output += `<div class="track-mouseover-menu-table-item">
-                      <label for="readName" class="track-mouseover-menu-table-item-label">${readNameLabel}</label>
-                      <div name="readName" class="track-mouseover-menu-table-item-value">${readNameValue}</div>
-                    </div>`;
-                  }
-
-                  const readIntervalLabel = (this.options.methylation) ? 'Interval' : (this.options.indexDHS) ? 'Range' : 'Interval';
-                  let readIntervalValue = `${read.chrName}:${read.from - read.chrOffset}-${read.to - read.chrOffset - 1}`;
-                  readIntervalValue += (this.options.methylation || this.options.ftFire || this.options.tfbs) ? ` (${read.strand})` : '';
-                  output += `<div class="track-mouseover-menu-table-item">
-                    <label for="readInterval" class="track-mouseover-menu-table-item-label">${readIntervalLabel}</label>
-                    <div name="readInterval" class="track-mouseover-menu-table-item-value">${readIntervalValue}</div>
-                  </div>`;
-
-                  if (this.options.methylation) {
-                    const readLength = `${read.to - read.from}`;
-                    output += `<div class="track-mouseover-menu-table-item">
-                      <label for="readLength" class="track-mouseover-menu-table-item-label">Length</label>
-                      <div name="readLength" class="track-mouseover-menu-table-item-value">${readLength}</div>
-                    </div>`;
-                  }
-
-                  else if (this.options.tfbs) {
-                    const tfbsScore = read.metadata.score;
-                    if (tfbsScore) {
+                    if (this.options.genericBed) {
+                      const genericBedNameLabel = 'Name';
+                      const genericBedNameValue = (read.readName !== '.') ? read.readName : this.options.name;
                       output += `<div class="track-mouseover-menu-table-item">
-                        <label for="tfbsScore" class="track-mouseover-menu-table-item-label">Score</label>
-                        <div name="tfbsScore" class="track-mouseover-menu-table-item-value">${tfbsScore}</div>
+                        <label for="readName" class="track-mouseover-menu-table-item-label">${genericBedNameLabel}</label>
+                        <div name="readName" class="track-mouseover-menu-table-item-value">${genericBedNameValue}</div>
                       </div>`;
                     }
-                    const tfbsSequence = read.seq;
-                    if (position) {
-                      const tfbsSequencePositionToHighlight = position - (read.from - read.chrOffset) + 1;
-                      // console.log(`tfbsSequencePositionToHighlight ${tfbsSequencePositionToHighlight} | ${position} | ${read.from} | ${read.chrOffset} | ${tfbsSequence}`);
-                      if (tfbsSequence && tfbsSequencePositionToHighlight >= 1 && tfbsSequencePositionToHighlight <= tfbsSequence.length) {
-                        let tfbsSequencePieces = '';
-                        if (tfbsSequencePositionToHighlight === 1) {
-                          tfbsSequencePieces += `<span class="track-mouseover-menu-table-item-value-sequence-highlight">${tfbsSequence.substring(0, 1)}</span>`;
-                          tfbsSequencePieces += `<span class="track-mouseover-menu-table-item-value-sequence">${tfbsSequence.substring(1, tfbsSequence.length)}</span>`;
-                        }
-                        else if (tfbsSequencePositionToHighlight === tfbsSequence.length) {
-                          tfbsSequencePieces += `<span class="track-mouseover-menu-table-item-value-sequence">${tfbsSequence.substring(0, tfbsSequence.length - 1)}</span>`;
-                          tfbsSequencePieces += `<span class="track-mouseover-menu-table-item-value-sequence-highlight">${tfbsSequence.substring(tfbsSequence.length - 1, tfbsSequence.length)}</span>`;
-                        }
-                        else {
-                          tfbsSequencePieces += `<span class="track-mouseover-menu-table-item-value-sequence">${tfbsSequence.substring(0, tfbsSequencePositionToHighlight - 1)}</span>`;
-                          tfbsSequencePieces += `<span class="track-mouseover-menu-table-item-value-sequence-highlight">${tfbsSequence.substring(tfbsSequencePositionToHighlight - 1, tfbsSequencePositionToHighlight)}</span>`;
-                          tfbsSequencePieces += `<span class="track-mouseover-menu-table-item-value-sequence">${tfbsSequence.substring(tfbsSequencePositionToHighlight, tfbsSequence.length)}</span>`;
-                        }
-                        // console.log(`tfbsSequencePieces ${tfbsSequencePieces}`);
-                        output += `<div class="track-mouseover-menu-table-item">
-                          <label for="tfbsSequence" class="track-mouseover-menu-table-item-label">Sequence</label>
-                          <div name="tfbsSequence" class="track-mouseover-menu-table-item-value">${tfbsSequencePieces}</div>
-                        </div>`;
-                      }
+
+                    else if (this.options.tfbs) {
+                      const tfbsValue = read.readName;
+                      const [tfbsClusterName, tfbsModelName] = tfbsValue.split('%%');
+                      const tfbsClusterNameLabel = 'Cluster';
+                      output += `<div class="track-mouseover-menu-table-item">
+                        <label for="tfbs" class="track-mouseover-menu-table-item-label">${tfbsClusterNameLabel}</label>
+                        <div name="tfbs" class="track-mouseover-menu-table-item-value">${tfbsClusterName}</div>
+                      </div>`;
+                      const tfbsModelNameLabel = 'Model';
+                      output += `<div class="track-mouseover-menu-table-item">
+                        <label for="tfbs" class="track-mouseover-menu-table-item-label">${tfbsModelNameLabel}</label>
+                        <div name="tfbs" class="track-mouseover-menu-table-item-value">${tfbsModelName}</div>
+                      </div>`;
                     }
+
+                    else if (this.options.indexDHS) {
+                      const readNameLabel = 'Index DHS';
+                      const readNameValue = `${read.readName} | ${this.options.name}`;
+                      output += `<div class="track-mouseover-menu-table-item">
+                        <label for="readName" class="track-mouseover-menu-table-item-label">${readNameLabel}</label>
+                        <div name="readName" class="track-mouseover-menu-table-item-value">${readNameValue}</div>
+                      </div>`;
+                    }
+
                     else {
-                      if (tfbsSequence) {
+                      const readNameLabel = 'Name';
+                      const readNameValue = read.readName;
+                      output += `<div class="track-mouseover-menu-table-item">
+                        <label for="readName" class="track-mouseover-menu-table-item-label">${readNameLabel}</label>
+                        <div name="readName" class="track-mouseover-menu-table-item-value">${readNameValue}</div>
+                      </div>`;
+                    }
+
+                    const readIntervalLabel = (this.options.methylation) ? 'Interval' : (this.options.indexDHS) ? 'Range' : 'Interval';
+                    let readIntervalValue = `${read.chrName}:${read.from - read.chrOffset}-${read.to - read.chrOffset - 1}`;
+                    readIntervalValue += (this.options.methylation || this.options.ftFire || this.options.tfbs) ? ` (${read.strand})` : '';
+                    output += `<div class="track-mouseover-menu-table-item">
+                      <label for="readInterval" class="track-mouseover-menu-table-item-label">${readIntervalLabel}</label>
+                      <div name="readInterval" class="track-mouseover-menu-table-item-value">${readIntervalValue}</div>
+                    </div>`;
+
+                    if (this.options.methylation) {
+                      const readLength = `${read.to - read.from}`;
+                      output += `<div class="track-mouseover-menu-table-item">
+                        <label for="readLength" class="track-mouseover-menu-table-item-label">Length</label>
+                        <div name="readLength" class="track-mouseover-menu-table-item-value">${readLength}</div>
+                      </div>`;
+                    }
+
+                    else if (this.options.tfbs) {
+                      const tfbsScore = read.metadata.score;
+                      if (tfbsScore) {
                         output += `<div class="track-mouseover-menu-table-item">
-                          <label for="tfbsSequence" class="track-mouseover-menu-table-item-label">Sequence</label>
-                          <div name="tfbsSequence" class="track-mouseover-menu-table-item-value track-mouseover-menu-table-item-value-sequence">${tfbsSequence}</div>
+                          <label for="tfbsScore" class="track-mouseover-menu-table-item-label">Score</label>
+                          <div name="tfbsScore" class="track-mouseover-menu-table-item-value">${tfbsScore}</div>
                         </div>`;
                       }
+                      const tfbsSequence = read.seq;
+                      if (position) {
+                        const tfbsSequencePositionToHighlight = position - (read.from - read.chrOffset) + 1;
+                        if (tfbsSequence && tfbsSequencePositionToHighlight >= 1 && tfbsSequencePositionToHighlight <= tfbsSequence.length) {
+                          let tfbsSequencePieces = '';
+                          if (tfbsSequencePositionToHighlight === 1) {
+                            tfbsSequencePieces += `<span class="track-mouseover-menu-table-item-value-sequence-highlight">${tfbsSequence.substring(0, 1)}</span>`;
+                            tfbsSequencePieces += `<span class="track-mouseover-menu-table-item-value-sequence">${tfbsSequence.substring(1, tfbsSequence.length)}</span>`;
+                          }
+                          else if (tfbsSequencePositionToHighlight === tfbsSequence.length) {
+                            tfbsSequencePieces += `<span class="track-mouseover-menu-table-item-value-sequence">${tfbsSequence.substring(0, tfbsSequence.length - 1)}</span>`;
+                            tfbsSequencePieces += `<span class="track-mouseover-menu-table-item-value-sequence-highlight">${tfbsSequence.substring(tfbsSequence.length - 1, tfbsSequence.length)}</span>`;
+                          }
+                          else {
+                            tfbsSequencePieces += `<span class="track-mouseover-menu-table-item-value-sequence">${tfbsSequence.substring(0, tfbsSequencePositionToHighlight - 1)}</span>`;
+                            tfbsSequencePieces += `<span class="track-mouseover-menu-table-item-value-sequence-highlight">${tfbsSequence.substring(tfbsSequencePositionToHighlight - 1, tfbsSequencePositionToHighlight)}</span>`;
+                            tfbsSequencePieces += `<span class="track-mouseover-menu-table-item-value-sequence">${tfbsSequence.substring(tfbsSequencePositionToHighlight, tfbsSequence.length)}</span>`;
+                          }
+                          output += `<div class="track-mouseover-menu-table-item">
+                            <label for="tfbsSequence" class="track-mouseover-menu-table-item-label">Sequence</label>
+                            <div name="tfbsSequence" class="track-mouseover-menu-table-item-value">${tfbsSequencePieces}</div>
+                          </div>`;
+                        }
+                      }
+                      else {
+                        if (tfbsSequence) {
+                          output += `<div class="track-mouseover-menu-table-item">
+                            <label for="tfbsSequence" class="track-mouseover-menu-table-item-label">Sequence</label>
+                            <div name="tfbsSequence" class="track-mouseover-menu-table-item-value track-mouseover-menu-table-item-value-sequence">${tfbsSequence}</div>
+                          </div>`;
+                        }
+                      }
                     }
+
+                    else if (this.options.indexDHS) {
+                      const metadata = read.metadata;
+                      // const realId = metadata.dhs.id;
+                      const elementSummit = `${read.chrName}:${parseInt(metadata.summit.start + (metadata.summit.end - metadata.summit.start)/2)}`;
+                      const elementScorePrecision = 4;
+                      const elementScore = Number.parseFloat(metadata.dhs.score).toPrecision(elementScorePrecision);
+                      const elementBiosampleCount = Number.parseInt(metadata.dhs.n);
+
+                      output += `<div class="track-mouseover-menu-table-item">
+                        <label for="readSummit" class="track-mouseover-menu-table-item-label">Summit</label>
+                        <div name="readSummit" class="track-mouseover-menu-table-item-value">${elementSummit}</div>
+                      </div>`;
+
+                      output += `<div class="track-mouseover-menu-table-item">
+                        <label for="readScore" class="track-mouseover-menu-table-item-label">Score</label>
+                        <div name="readScore" class="track-mouseover-menu-table-item-value">${elementScore}</div>
+                      </div>`;
+
+                      output += `<div class="track-mouseover-menu-table-item">
+                        <label for="readCategory" class="track-mouseover-menu-table-item-label">Category</label>
+                        <div name="readCategory" class="track-mouseover-menu-table-item-value">${this.indexDHSElementCategory(this.options.indexDHS.itemRGBMap, metadata.rgb)}</div>
+                      </div>`;
+
+                      const indexDHSStart = read.from - read.chrOffset;
+                      const indexDHSEnd = read.to - read.chrOffset - 1;
+                      output += `<div class="track-mouseover-menu-table-item">
+                        <label for="readStructure" class="track-mouseover-menu-table-item-label">Structure</label>
+                        <div name="readStructure" class="track-mouseover-menu-table-item-value track-mouseover-menu-table-item-value-svg">${this.indexDHSElementCartoon(indexDHSStart, indexDHSEnd, metadata.rgb, read.substitutions, metadata.summit.start, metadata.summit.end, metadata.dhs.id)}</div>
+                      </div>`;
+
+                      output += `<div class="track-mouseover-menu-table-item">
+                        <label for="readSamples" class="track-mouseover-menu-table-item-label">Samples</label>
+                        <div name="readSamples" class="track-mouseover-menu-table-item-value">Found in <span style="font-weight: 900; padding-left:5px; padding-right:5px;">${elementBiosampleCount}</span> / ${this.options.indexDHS.biosampleCount} biosamples</div>
+                      </div>`;
+                    }
+
+                    output += `</div>`;
+
+                    return output;
                   }
-
-                  else if (this.options.indexDHS) {
-                    const metadata = read.metadata;
-                    // const realId = metadata.dhs.id;
-                    const elementSummit = `${read.chrName}:${parseInt(metadata.summit.start + (metadata.summit.end - metadata.summit.start)/2)}`;
-                    const elementScorePrecision = 4;
-                    const elementScore = Number.parseFloat(metadata.dhs.score).toPrecision(elementScorePrecision);
-                    const elementBiosampleCount = Number.parseInt(metadata.dhs.n);
-
-                    output += `<div class="track-mouseover-menu-table-item">
-                      <label for="readSummit" class="track-mouseover-menu-table-item-label">Summit</label>
-                      <div name="readSummit" class="track-mouseover-menu-table-item-value">${elementSummit}</div>
-                    </div>`;
-
-                    output += `<div class="track-mouseover-menu-table-item">
-                      <label for="readScore" class="track-mouseover-menu-table-item-label">Score</label>
-                      <div name="readScore" class="track-mouseover-menu-table-item-value">${elementScore}</div>
-                    </div>`;
-
-                    output += `<div class="track-mouseover-menu-table-item">
-                      <label for="readCategory" class="track-mouseover-menu-table-item-label">Category</label>
-                      <div name="readCategory" class="track-mouseover-menu-table-item-value">${this.indexDHSElementCategory(this.options.indexDHS.itemRGBMap, metadata.rgb)}</div>
-                    </div>`;
-
-                    const indexDHSStart = read.from - read.chrOffset;
-                    const indexDHSEnd = read.to - read.chrOffset - 1;
-                    output += `<div class="track-mouseover-menu-table-item">
-                      <label for="readStructure" class="track-mouseover-menu-table-item-label">Structure</label>
-                      <div name="readStructure" class="track-mouseover-menu-table-item-value track-mouseover-menu-table-item-value-svg">${this.indexDHSElementCartoon(indexDHSStart, indexDHSEnd, metadata.rgb, read.substitutions, metadata.summit.start, metadata.summit.end, metadata.dhs.id)}</div>
-                    </div>`;
-
-                    output += `<div class="track-mouseover-menu-table-item">
-                      <label for="readSamples" class="track-mouseover-menu-table-item-label">Samples</label>
-                      <div name="readSamples" class="track-mouseover-menu-table-item-value">Found in <span style="font-weight: 900; padding-left:5px; padding-right:5px;">${elementBiosampleCount}</span> / ${this.options.indexDHS.biosampleCount} biosamples</div>
-                    </div>`;
-                  }
-
-                  // if (nearestSub && nearestSub.type) {
-                  //   const readNearestOp = `${nearestSub.length}${cigarTypeToText(nearestSub.type)}`;
-                  //   output += `<div class="track-mouseover-menu-table-item">
-                  //     <label for="readNearestOp" class="track-mouseover-menu-table-item-label">Nearest op</label>
-                  //     <div name="readNearestOp" class="track-mouseover-menu-table-item-value">${readNearestOp}</div>
-                  //   </div>`;
-                  // }
-                  // else if (nearestSub && nearestSub.variant) {
-                  //   const readNearestOp = `${nearestSub.length} (${nearestSub.variant})`;
-                  //   output += `<div class="track-mouseover-menu-table-item">
-                  //     <label for="readNearestOp" class="track-mouseover-menu-table-item-label">Nearest op</label>
-                  //     <div name="readNearestOp" class="track-mouseover-menu-table-item-value">${readNearestOp}</div>
-                  //   </div>`;
-                  // }
-
-                  output += `</div>`;
-
-                  return output;
-                  // + `CIGAR: ${read.cigar || ''} MD: ${read.md || ''}`);
                 }
               }
             }
@@ -2203,16 +2081,14 @@ varying vec4 vColor;
     }
 
     outlineMate(read, yScaleBand){
-      for (const mate_id of read.mate_ids) {
+      read.mate_ids.forEach((mate_id) => {
         if (!this.readsById[mate_id]) {
           return;
         }
         const mate = this.readsById[mate_id];
         // We assume the mate height is the same, but width might be different
-        const mate_width =
-          this._xScale(mate.to) - this._xScale(mate.from);
-        const mate_height =
-          yScaleBand.bandwidth() * this.valueScaleTransform.k;
+        const mate_width = this._xScale(mate.to) - this._xScale(mate.from);
+        const mate_height = yScaleBand.bandwidth() * this.valueScaleTransform.k;
         const mate_xPos = this._xScale(mate.from);
         const mate_yPos = transformY(
           this.yScaleBands[mate.groupKey](mate.row),
@@ -2228,33 +2104,7 @@ varying vec4 vColor;
           mate_width,
           mate_height,
         );
-      }
-      // read.mate_ids.forEach((mate_id) => {
-      //   if (!this.readsById[mate_id]) {
-      //     return;
-      //   }
-      //   const mate = this.readsById[mate_id];
-      //   // We assume the mate height is the same, but width might be different
-      //   const mate_width =
-      //     this._xScale(mate.to) - this._xScale(mate.from);
-      //   const mate_height =
-      //     yScaleBand.bandwidth() * this.valueScaleTransform.k;
-      //   const mate_xPos = this._xScale(mate.from);
-      //   const mate_yPos = transformY(
-      //     this.yScaleBands[mate.groupKey](mate.row),
-      //     this.valueScaleTransform,
-      //   );
-      //   this.mouseOverGraphics.lineStyle({
-      //     width: 1,
-      //     color: 0,
-      //   });
-      //   this.mouseOverGraphics.drawRect(
-      //     mate_xPos,
-      //     mate_yPos,
-      //     mate_width,
-      //     mate_height,
-      //   );
-      // });
+      });
       this.animate();
     }
 
@@ -2299,24 +2149,25 @@ varying vec4 vColor;
             });
           }
 
-          this.errorTextText = (this.dataFetcher.dataConfig.options && this.dataFetcher.dataConfig.options.maxTileWidthReachedMessage) ? this.dataFetcher.dataConfig.options.maxTileWidthReachedMessage : "Zoom in to load data";
+          const errorText =
+            `Zoom in to see details.\n` +
+            `Current tile span ${tileWidth}. Max span: ${currentMaxTileWidth}`;
+
+          this.setError(errorText, 'PileupTrack.tileWidth');
+          this.updateLoadingText();
           this.drawError();
           this.animate();
           this.maxTileWidthReached = true;
 
           const msg = {state: 'update_end', msg: 'Completed (calculateVisibleTiles)',  uid: this.id};
-          // console.log(`${JSON.stringify(msg)}`);
           try {
             this.bc.postMessage(msg);
           } catch (e) {}
 
           return;
         } else {
-          this.errorTextText = null;
-          this.pBorder.clear();
-          this.drawError();
-          this.animate();
           this.maxTileWidthReached = false;
+          this.setError('', 'PileupTrack.tileWidth');
 
           if (this.options.collapseWhenMaxTileWidthReached) {
             this.pubSub.publish('trackDimensionsModified', {
@@ -2541,6 +2392,7 @@ PileupTrack.config = {
     'highlightReadsBy',
     'smallInsertSizeThreshold',
     'largeInsertSizeThreshold',
+    'viewAsPairs',
     // 'minZoom',
     'showLoadingText',
   ],
@@ -2567,6 +2419,7 @@ PileupTrack.config = {
     minMappingQuality: 0,
     highlightReadsBy: [],
     largeInsertSizeThreshold: 1000,
+    viewAsPairs: false,
     showLoadingText: false,
   },
   optionsInfo: {

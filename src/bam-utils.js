@@ -283,33 +283,26 @@ export const genericBedColors = (options) => {
   //   colorTable[`GENERIC_BED_${c}`] = [...v, 1.0];
   // });
   options.genericBed.colors.forEach((c, i) => {
-    // console.log(`c ${c} | i ${i}`);
     const v = c.split(',').map(d => parseFloat((parseFloat(d)/255).toFixed(2)));
     colorTable[`GENERIC_BED_${c}`] = [...v, 1.0];
   });
-  // console.log(`colorTable ${JSON.stringify({...PILEUP_COLORS, ...colorTable})}`);
   return {...PILEUP_COLORS, ...colorTable};
 }
 
 export const indexDHSColors = (options) => {
   if (!options.indexDHS) return {};
-  // console.log(`options ${JSON.stringify(options)}`);
-  // console.log(`options.indexDHS.itemRGBMap ${JSON.stringify(options.indexDHS.itemRGBMap)}`);
   const colorTable = {};
   colorTable['INDEX_DHS_BG'] = [0, 0, 0, 0], // Index DHS background default
   Object.entries(options.indexDHS.itemRGBMap).map((o) => {
     const k = o[0];
-    // const v = o[1];
     const v = k.split(',').map(d => parseFloat((parseFloat(d)/255).toFixed(2)));
     colorTable[`INDEX_DHS_${k}`] = [...v, 1.0];
   });
-  // console.log(`colorTable ${JSON.stringify(colorTable)}`);
   return {...PILEUP_COLORS, ...colorTable};
 };
 
 export const fireColors = (options) => {
   if (!options.fire) return {};
-  // console.log(`options.fire ${JSON.stringify(options.fire)}`);
   const colorTable = {};
   colorTable['FIRE_BG_TEST'] = [0.89, 0.89, 0.89, 1], // FIRE background default
   Object.entries(options.fire.metadata.itemRGBMap).map((o) => {
@@ -318,13 +311,11 @@ export const fireColors = (options) => {
     const v = k.split(',').map(d => parseFloat((parseFloat(d)/255).toFixed(2)));
     colorTable[`FIRE_${k}`] = [...v, 1.0];
   });
-  // console.log(`colorTable ${JSON.stringify(colorTable)}`);
   return {...PILEUP_COLORS, ...colorTable};
 };
 
 export const ftFireColors = (options) => {
   if (!options.ftFire) return {};
-  // console.log(`options.ftFire ${JSON.stringify(options.ftFire)}`);
   const colorTable = {};
   colorTable['FIRE_BG_TEST'] = [0.89, 0.89, 0.89, 1], // FIRE background default
   Object.entries(options.ftFire.metadata.itemRGBMap).map((o) => {
@@ -333,7 +324,6 @@ export const ftFireColors = (options) => {
     const v = k.split(',').map(d => parseFloat((parseFloat(d)/255).toFixed(2)));
     colorTable[`FIRE_${k}`] = [...v, 1.0];
   });
-  // console.log(`colorTable ${JSON.stringify(colorTable)}`);
   return {...PILEUP_COLORS, ...colorTable};
 };
 
@@ -351,6 +341,24 @@ export const cigarTypeToText = (type) => {
   }
 
   return type;
+};
+
+export const posToChrPos = (pos, chromsizes) => {
+  // Convert an absolute genomic position to a chromosome
+  // position. The chromsizes array should be an array of [chrom, size]
+  // tuples
+
+  // assume the position is 1-based
+
+  for (let i = 0; i < chromsizes.length; i++) {
+    if (pos <= chromsizes[i][1]) {
+      return [chromsizes[i][0], pos];
+    }
+
+    pos -= chromsizes[i][1];
+  }
+
+  throw new Error('Position extends beyond chromsizes');
 };
 
 export const parseMD = (mdString, useCounts) => {
@@ -499,7 +507,6 @@ export const getMethylationOffsets = (segment, seq, alignCpGEvents) => {
       //
       // shift reverse-stranded CpG events upstream by one bases
       //
-      // console.log(`alignCpGEvents ${alignCpGEvents}`);
       // if (mo.unmodifiedBase === 'C' && segment.strand === '-' && alignCpGEvents) {
       //   for (let i = 0; i < nOffsets; ++i) {
       //     offsets[i] -= 1;
@@ -565,18 +572,11 @@ export const getMethylationOffsets = (segment, seq, alignCpGEvents) => {
 
       mo.offsets = modifiedOffsets;
       mo.probabilities = modifiedProbabilities;
-
-      // if (mo.unmodifiedBase === 'A') {
-      //   console.log(`segment.substitutions ${JSON.stringify(segment.substitutions, null, 2)}`); 
-      //   console.log(`${JSON.stringify(actions)}`);
-      // }
       
       methylationOffsets.push(mo);
       currentOffsetCount += nOffsets;
     });
   }
-
-  // console.log(`methylationOffsets ${JSON.stringify(methylationOffsets, null, 2)}`);
 
   return methylationOffsets;
 }
@@ -961,11 +961,14 @@ export const getFibertoolsFIREMSPOffsets = (segment) => {
 
 /**
  * Gets an array of all substitutions in the segment
- * @param  {String} segment  Current segment
- * @param  {String} seq   Read sequence from bam file.
- * @return {Boolean} includeClippingOps  Include soft or hard clipping operations in substitutions output.
+ * @param  {String}  segment             Current segment
+ * @param  {String}  seq                 Read sequence from bam file.
+ * @param  {Boolean} includeClippingOps  Include soft or hard clipping operations in substitutions output.
+ * @param  {Boolean} reverseCIGAROps     Reverse order of CIGAR operations before processing.
+ * @param  {Object}  trackOptions        Track options.
+ * @return {Array}   Array of substitution objects.
  */
-export const getSubstitutions = (segment, seq, includeClippingOps, reverseCIGAROps) => {
+export const getSubstitutions = (segment, seq, includeClippingOps, reverseCIGAROps, trackOptions) => {
   let substitutions = [];
   let softClippingAtReadStart = null;
 
@@ -1044,7 +1047,7 @@ export const getSubstitutions = (segment, seq, includeClippingOps, reverseCIGARO
         currPos += sub.length;
       }
       else {
-        // console.log('skipping:', sub.type);
+        // no-op
       }
     }
 
@@ -1089,25 +1092,27 @@ export const getSubstitutions = (segment, seq, includeClippingOps, reverseCIGARO
     }
   }
 
-  // if (segment.md) {
-  //   const mdSubstitutions = parseMD(segment.md, false);
+  if (Object.hasOwn(trackOptions, 'methylation') || Object.hasOwn(trackOptions, 'indexDHS') || Object.hasOwn(trackOptions, 'tfbs') || Object.hasOwn(trackOptions, 'fire') || Object.hasOwn(trackOptions, 'ftFire') || Object.hasOwn(trackOptions, 'genericBed')) {
+    if (segment.md) {
+      const mdSubstitutions = parseMD(segment.md, false);
 
-  //   mdSubstitutions.forEach(function (substitution) {
-  //     let posStart = substitution['pos'] + substitution['bamSeqShift'];
-  //     let posEnd = posStart + substitution['length'];
-  //     // When there is soft clipping at the beginning,
-  //     // we need to shift the position where we read the variant from the sequence
-  //     // not necessary when there is hard clipping
-  //     if (softClippingAtReadStart !== null) {
-  //       posStart += softClippingAtReadStart.length;
-  //       posEnd += softClippingAtReadStart.length;
-  //     }
-  //     substitution['variant'] = seq.substring(posStart, posEnd);
-  //     delete substitution['bamSeqShift'];
-  //   });
+      mdSubstitutions.forEach(function (substitution) {
+        let posStart = substitution['pos'] + substitution['bamSeqShift'];
+        let posEnd = posStart + substitution['length'];
+        // When there is soft clipping at the beginning,
+        // we need to shift the position where we read the variant from the sequence
+        // not necessary when there is hard clipping
+        if (softClippingAtReadStart !== null) {
+          posStart += softClippingAtReadStart.length;
+          posEnd += softClippingAtReadStart.length;
+        }
+        substitution['variant'] = seq.substring(posStart, posEnd);
+        delete substitution['bamSeqShift'];
+      });
 
-  //   substitutions = mdSubstitutions.concat(substitutions);
-  // }
+      substitutions = mdSubstitutions.concat(substitutions);
+    }
+  }
 
   return substitutions;
 };
@@ -1118,7 +1123,8 @@ export const getSubstitutions = (segment, seq, includeClippingOps, reverseCIGARO
 export const areMatesRequired = (trackOptions) => {
   return (
     trackOptions.highlightReadsBy.length > 0 ||
-    trackOptions.outlineMateOnHover
+    trackOptions.outlineMateOnHover ||
+    trackOptions.viewAsPairs
   );
 };
 
